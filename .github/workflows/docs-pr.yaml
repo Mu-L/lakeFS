@@ -2,8 +2,10 @@ name: Docs Preview and Link Check
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, closed]
     paths:
       - "docs/**"
+      - ".github/workflows/docs-*.yaml"
     branches:
       - master
 
@@ -11,16 +13,18 @@ jobs:
   # This job name kept short because it's used in the preview URL
   preview:
     name: Docs PR - Publish preview and check links
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
+    permissions:
+          pull-requests: write
     steps:
       - name: Check-out
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           working-directory: docs
-          ruby-version: '2.7'
+          ruby-version: '3.2'
           bundler-cache: true # runs 'bundle install' and caches installed gems automatically
 
       - name: Build latest
@@ -57,9 +61,9 @@ jobs:
 
       - name: Check links
         id: lychee
-        uses: lycheeverse/lychee-action@v1.7.0
+        uses: lycheeverse/lychee-action@v1.8.0
         with:
-          args: docs/_site --no-progress --exclude-file=docs/.lycheeignore
+          args: docs/_site --no-progress --exclude-mail --exclude-file=docs/.lycheeignore
           fail: true
           jobSummary: true
           format: markdown

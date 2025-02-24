@@ -9,8 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/kv"
-	"github.com/treeverse/lakefs/pkg/kv/migrations"
-	"github.com/treeverse/lakefs/pkg/logging"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
 )
 
 // migrateCmd represents the migrate command
@@ -23,8 +22,8 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print current migration version and available version",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfig()
-		kvParams, err := cfg.DatabaseParams()
+		cfg := loadConfig().GetBaseConfig()
+		kvParams, err := kvparams.NewConfig(&cfg.Database)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "KV params: %s\n", err)
 			os.Exit(1)
@@ -64,8 +63,8 @@ var upCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Apply all up migrations",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfig()
-		kvParams, err := cfg.DatabaseParams()
+		cfg := loadConfig().GetBaseConfig()
+		kvParams, err := kvparams.NewConfig(&cfg.Database)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "KV params: %s\n", err)
 			os.Exit(1)
@@ -101,23 +100,30 @@ var upCmd = &cobra.Command{
 	},
 }
 
-func DoMigration(ctx context.Context, kvStore kv.Store, cfg *config.Config, force bool) error {
+func DoMigration(ctx context.Context, kvStore kv.Store, _ *config.BaseConfig, _ bool) error {
 	var (
 		version int
 		err     error
 	)
+
+	// This loop performs all migration paths until reaching the latest KV schema version
+	// A precondition is coming up from a lakeFS version that supports KV migration (kv.InitialMigrateVersion)
+	// Each migration scenario is responsible also to bump the KV schema to the next version
+	// The iteration ends when we reach the latest version
 	for !kv.IsLatestSchemaVersion(version) {
 		version, err = kv.GetDBSchemaVersion(ctx, kvStore)
 		if err != nil {
 			return err
 		}
 		switch {
-		case version >= kv.NextSchemaVersion || version < kv.ACLMigrateVersion:
+		case version >= kv.NextSchemaVersion || version < kv.InitialMigrateVersion:
 			return fmt.Errorf("wrong starting version %d: %w", version, kv.ErrMigrationVersion)
-		case version < kv.ACLNoReposMigrateVersion:
-			err = migrations.MigrateToACL(ctx, kvStore, cfg, logging.Default(), version, force)
-		case version < kv.ACLImportMigrateVersion:
-			err = migrations.MigrateImportPermissions(ctx, kvStore, cfg)
+		// Due to removal of ACLs from lakeFS, ACL migration code is no longer needed. Users who previously used RBAC will be migrated
+		// directly to basic auth.
+		// Since there are no other migration scenarios ATM we just need to bump the schema version
+		// This will need to be modified once a new migration scenario is required
+		default:
+			err = kv.SetDBSchemaVersion(ctx, kvStore, kv.ACLImportMigrateVersion)
 		}
 		if err != nil {
 			return err
@@ -130,8 +136,8 @@ var gotoCmd = &cobra.Command{
 	Use:   "goto",
 	Short: "Migrate to version V.",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg := loadConfig()
-		kvParams, err := cfg.DatabaseParams()
+		cfg := loadConfig().GetBaseConfig()
+		kvParams, err := kvparams.NewConfig(&cfg.Database)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "KV params: %s\n", err)
 			os.Exit(1)

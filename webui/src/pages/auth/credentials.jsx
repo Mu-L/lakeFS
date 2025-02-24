@@ -1,6 +1,5 @@
-import React from "react";
-
-import {AuthLayout} from "../../lib/components/auth/layout";
+import React, {useEffect} from "react";
+import { useOutletContext } from "react-router-dom";
 import {
     ActionGroup,
     ActionsBar,
@@ -13,12 +12,11 @@ import {auth} from "../../lib/api";
 import {useState} from "react";
 import {CredentialsShowModal, CredentialsTable} from "../../lib/components/auth/credentials";
 import {useRouter} from "../../lib/hooks/router";
-
+import {resolveUserDisplayName} from "../../lib/utils";
 
 const CredentialsContainer = () => {
     const router = useRouter();
     const { user } = useUser();
-    const userId = (user) ? user.id : "";
     const [refreshToken, setRefreshToken] = useState(false);
     const [createError, setCreateError] = useState(null);
     const [createdKey, setCreatedKey] = useState(null);
@@ -42,7 +40,7 @@ const CredentialsContainer = () => {
                     <ConfirmationButton
                         variant="success"
                         modalVariant="success"
-                        msg={<span>Create a new Access Key for user <strong>{userId}</strong>?</span>}
+                        msg={<span>Create a new Access Key for user <strong>{resolveUserDisplayName(user)}</strong>?</span>}
                         onConfirm={hide => {
                             createKey()
                                 .then(key => { setCreatedKey(key) })
@@ -81,11 +79,9 @@ const CredentialsContainer = () => {
 };
 
 const CredentialsPage = () => {
-    return (
-        <AuthLayout activeTab="credentials">
-            <CredentialsContainer/>
-        </AuthLayout>
-    );
+    const [setActiveTab] = useOutletContext();
+    useEffect(() => setActiveTab("credentials"), [setActiveTab]);
+    return <CredentialsContainer/>;
 };
 
 

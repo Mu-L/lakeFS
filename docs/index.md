@@ -1,6 +1,5 @@
 ---
-layout: default
-title: lakeFS
+title: Welcome to lakeFS
 description: The lakeFS documentation provides guidance on how to use lakeFS to deliver resilience and manageability to data lakes.
 nav_order: 0
 redirect_from: /downloads.html
@@ -8,79 +7,91 @@ redirect_from: /downloads.html
 
 # Welcome to the Lake! 
 
-<img src="/assets/img/waving-axolotl-transparent.gif" width="90"/>
+<img src="{{ site.baseurl }}/assets/img/waving-axolotl-transparent.gif" width="90"/>
 
-{: .no_toc }
 
-**lakeFS brings software engineering best practices and applies them to data engineering.** 
+**lakeFS brings software engineering best practices and applies them to data.** 
 
 lakeFS provides version control over the data lake, and uses Git-like semantics to create and access those versions. If you know git, you'll be right at home with lakeFS.
 
-With lakeFS, you can use concepts on your data lake such as **branch** to create an isolated version of the data, **commit** to create a reproducible point in time, and **merge** in order to incorporate your changes in one atomic action.
+With lakeFS, you can apply concepts to your data lake such as **branching** to create an isolated version of the data, **committing** to create a reproducible point in time, and **merging** in order to incorporate your changes in one atomic action.
+
+<iframe width="420" height="315" src="https://www.youtube.com/embed/GTxsyeoLccw"></iframe>
 
 ## How Do I Get Started? 
 
-**[The hands-on quickstart](/quickstart) guides you through some of core features of lakeFS**. 
+**[The hands-on quickstart](./quickstart) guides you through some core features of lakeFS**. 
 
-These include [branching](/quickstart/branch.html), [merging](quickstart/commit-and-merge.html), and [rolling back changes](quickstart/rollback.html) to data. 
-
+These include [branching](./quickstart/branch.html), [merging](quickstart/commit-and-merge.html), and [rolling back changes](quickstart/rollback.html) to data. 
+      
 {: .note}
 You can use the [30-day free trial of lakeFS Cloud](https://lakefs.cloud/register) if you want to try out lakeFS without installing anything. 
 
 ## Key lakeFS Features
 
-* It is format-agnostic.
+* It is format-agnostic and works with both structured and unstructured data
 * It works with numerous data tools and platforms.
-* Your data stays in place.
-* It minimizes data duplication via a copy-on-write mechanism.
-* It maintains high performance over data lakes of any size.
-* It includes configurable garbage collection capabilities.
-* It is proven in production and has an active community.
+* Your data stays in place, with no need to copy existing data
+* It eliminates the need for data duplication using [zero-copy branching](understand/model.md#zero-copy-branching).
+* It maintains high performance over data lakes of any size
+* It includes configurable garbage collection capabilities
+* It is proven in production and has an active community
 
-<img src="/assets/img/lakeFS_integration.png" alt="lakeFS integration into data lake" width="60%" height="60%" />
+<img src="{{ site.baseurl }}/assets/img/lakeFS_integration.png" alt="lakeFS integration into data lake" width="60%" height="60%" />
 
 ## How Does lakeFS Work With Other Tools? 
 
-lakeFS is an open source project that supports managing data in AWS S3, Azure Blob Storage, Google Cloud Storage (GCS) and any other object storage with an S3 interface. It integrates seamlessly with popular data frameworks such as Spark, Hive Metastore, dbt, Trino, Presto, and many others and includes an S3 compatibility layer.
+lakeFS is an open source project that supports managing data in AWS S3, Azure Blob Storage, Google Cloud Storage (GCS), S3-Compatible storage solutions and even locally mounted directories. 
+It integrates seamlessly with popular data frameworks such as [Spark](./integrations/spark.md), [AWS SageMaker](./integrations/sagemaker.md), [Pandas](./integrations/python.md#integrations-with-popular-data-science-packages), [Tensorflow](./integrations/python.md#integrations-with-popular-data-science-packages), [Polars](./integrations/python.md#integrations-with-popular-data-science-packages), [HuggingFace Datasets](./integrations/huggingface_datasets.md) and many more.
 
 {: .note}
-For more details and a full list see [the integrations pages](/integrations/).
+For more details and a full list see [the integrations pages](./integrations/).
+
+With lakeFS, you can use any of the tools and libraries you are used to work with to read and write data directly from a repository, e.g.
+
+```python
+>>> import pandas as pd
+>>>
+>>> df = pd.read_csv('lakefs://example-repository/main-branch/path/to.csv')
+```
+
+Using this method, lakeFS acts as a metadata layer: it figures out which objects need to be fetched from the underlying storage for that version of the data and then lets the client read or write these files directly from the storage using [pre-signed URLs](./security/presigned-url.md). This allows lakeFS to be both very efficient but also highly secure:
 
 <p class="center">
-    <img src="assets/what_is.png"/>
+    <img src="{{ site.baseurl }}/assets/img/lakeFSArchitecture.png"/>
 </p>
 
 {: .pb-5 }
 
-lakeFS maintains compatibility with the S3 API to minimize adoption
+Additionally, lakeFS maintains compatibility with the S3 API to minimize adoption
 friction. You can use it as a drop-in replacement for S3 from the perspective of
 any tool interacting with a data lake.
 
-For example, take the common operation of reading a collection of data from an object storage into a Spark DataFrame. For data outside a lakeFS repo, the code will look like this:
+For example, take the common operation of reading unstructured data from the object store using [Boto3](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html){: target="_blank" } (Python):
 
 ```py
-df = spark.read.parquet("s3a://my-bucket/collections/foo/")
+>>> import boto3
+>>> 
+>>> s3 = boto3.resource('s3')
+>>> obj = s3.Object('example-repository', 'main-branch/path/image.png')
+>>> image_data = obj.get()['Body'].read()
 ```
 
-After adding the data collections into my-bucket to a repository, the same operation becomes:
-
-```py
-df = spark.read.parquet("s3a://my-repo/main-branch/collections/foo/")
-```
-
-You can use the same methods and syntax you are already using to read and write data when using a lakeFS repository. This simplifies the adoption of lakeFS - minimal changes are needed to get started, making further changes an incremental process.
+You can use the same methods and syntax you are already using to read and write data when using a lakeFS repository. 
+This simplifies the adoption of lakeFS - minimal changes are needed to get started, making further changes an incremental process.
 
 ## lakeFS is Git for Data
 
-Git conquered the world of code because it had best supported engineering best practices required by developers, in particular:
+Git became ubiquitous when it comes to code because it had best supported engineering best practices required by developers, in particular:
 
 * Collaborate during development.
-* Develop and Test in isolation
-* Revert code repository to a sable version in case of an error
 * Reproduce and troubleshoot issues with a given version of the code
+* Develop and Test in isolation
+* Revert code to a stable version in case of an error
 * Continuously integrate and deploy new code (CI/CD)
 
-lakeFS provides these exact benefits, that are data practitioners are missing today, and enables them a clear intuitive Git-like interface to easily manage their data like they manage code. Through its versioning engine, lakeFS enables the following built-in operations familiar from Git:
+lakeFS provides these exact benefits, that data practitioners are missing today, and enables them a clear intuitive Git-like interface to easily manage data like they manage code. 
+Through its versioning engine, lakeFS enables the following built-in operations familiar from Git:
 
 * **branch:** a consistent copy of a repository, isolated from other branches and their changes. Initial creation of a branch is a metadata operation that does not duplicate objects.
 * **commit:** an immutable checkpoint containing a complete snapshot of a repository.
@@ -92,29 +103,11 @@ lakeFS provides these exact benefits, that are data practitioners are missing to
 definition of these, and the [CLI reference](reference/cli.md) for the
 full list of commands.*
 
-Incorporating these operations into your data lake pipelines provides the same collaboration and organizational benefits you get when managing application code with source control.
-
-### The lakeFS Promotion Workflow
-
-Here's how lakeFS *branches* and *merges* improve the universal process of updating collections with the latest data.
-
-<img src="/assets/img/promotion_workflow.png" alt="lakeFS promotion workflow" width="60%" height="60%" />
-
-1. First, create a new **branch** from `main` to instantly generate a complete "copy" of your production data.
-2. Apply changes or make updates on the isolated branch to understand their impact prior to exposure.
-3. And finally, perform a **merge** from the feature branch back to main to atomically promote the updates into production.
-
-Following this pattern, lakeFS facilitates a streamlined data deployment workflow that consistently produces data assets you can have total confidence in.
+Incorporating these operations into your data and model development provides the same collaboration and organizational benefits you get when managing application code with source control.
 
 ## How Can lakeFS Help Me?
 
 lakeFS helps you maintain a tidy data lake in several ways, including:
-
-### Isolated Dev/Test Environments with copy-on-write
-
-lakeFS makes creating isolated dev/test environments for ETL testing instantaneous, and through its use of copy-on-write, cheap. This enables you to test and validate code changes on production data without impacting it, as well as run analysis and experiments on production data in an isolated clone. 
-
-👉🏻 [Read more](/use_cases/etl_testing.html)
 
 ### Reproducibility: What Did My Data Look Like at a Point In Time?
 
@@ -122,69 +115,59 @@ Being able to look at data as it was at a given point is particularly useful in 
 
 1. Reproducibility of ML experiments
 
-    ML experimentation is usually an iterative process, and being able to reproduce a specific iteration is important. 
+    ML experimentation is iterative, requiring the ability to reproduce specific results. With lakeFS, you can version all aspects of an ML experiment, including the data. This enables:
     
-    With lakeFS you can version all components of an ML experiment including its data, as well as make use of copy-on-write to minimise the footprint of versions of the data
+    **Data Lineage**: Track the transformation of data from raw datasets to the final version used in experiments, ensuring transparency and traceability.
+    
+    **Zero-Copy Branching**: Minimize storage use by creating lightweight branches of your data, allowing for easy experimentation across different versions.
+        
+    **Easy Integration**: Seamlessly integrate with ML tools like MLFlow, linking experiments directly to the exact data versions used, making reproducibility straightforward.
+    
+    lakeFS enhances your ML workflow by ensuring that all versions of data are easily accessible, traceable, and reproducible.
 
 2. Troubleshooting production problems
 
-    Data engineers are often asked to validate the data. A user might report inconsistencies, question the accuracy, or simply report it to be incorrect. 
+    In some cases, a user might report inconsistencies, question the accuracy, or simply report data or inference results as incorrect. 
     
-    Since the data continuously changes, it is challenging to understand its state at the time of the error.
+    Since data continuously changes, it is challenging to understand its state at the time of the error.
 
     With lakeFS you can create a branch from a commit to debug an issue in isolation.
 
-👉🏻 [Read More](/use_cases/reproducibility.html)
+👉🏻 [Read More](./understand/use_cases/reproducibility.html)
+
+### Collaboration during development and training
+
+With lakeFS, each member of the team can create their own branch, isolated from other people's changes. 
+
+This allows to iterate on changes to an algorithm or transformation, without stepping on eachother's toes. These branches are centralized - they could be share among users for collaboration, and can even be merged.
+
+With lakeFS you can even open [pull requests](./howto/pull-requests.md), allowing you to easily share changes with other members and collaborate on them.
+
+### Isolated Dev/Test Environments with zero-copy branching
+
+lakeFS makes creating isolated dev/test environments for transformations, model development, parallel experiments, and ETL processes- achieved through the use of zero-copy branches.
+This enables you to test and validate code changes on production data without impacting it, as well as run analysis and experiments on production data in an isolated clone. 
+
+👉🏻 [Read more](./understand/use_cases/etl_testing.html)
+
 
 ### Rollback of Data Changes and Recovery from Data Errors
 
-Human error, misconfiguration, or wide-ranging systematic effects are
-unavoidable. When they do happen, erroneous data may make it into
-production or critical data assets might accidentally by deleted.
+Human error or misconfigurations can lead to erroneous data making its way into production or critical data being accidentally deleted. Traditional backups are often inadequate for recovery in these situations, as they may be outdated and require time-consuming object-level sifting.
 
-By their nature, backups are a wrong tool for recovering from such events.
-Backups are periodic events that are usually not tied to performing
-erroneous operations. So, they may be out of date, and  will require
-sifting through data at the object level. This process is inefficient and
-can take hours, days, or in some cases, weeks to complete. By quickly
-committing entire snapshots of data at well-defined times, recovering data
-in deletion or corruption events becomes an instant one-line operation with
-lakeFS: just identify a good historical commit, and then restore to it or
-copy from it.
+With lakeFS, you can avoid these inefficiencies by committing snapshots of data at well-defined times. 
+This allows for instant recovery: simply identify a good historical commit and restore or copy from it with a single operation.
 
-👉🏻 [Read more](/use_cases/rollback.html)
+👉🏻 [Read more](./understand/use_cases/rollback.html)
 
-### Multi-Table Transactions guarantees
-
-Data engineers typically need to implement custom logic in scripts to guarantee
-two or more data assets are updated synchronously. This logic often
-requires extensive rewrites or periods during which data is unavailable.
-The lakeFS merge operation from one branch into another removes the need to
-implement this logic yourself.
-
-Instead, make updates to the desired data assets on a branch and then utilize a lakeFS merge to atomically expose the data to downstream consumers.
-
-To learn more about atomic cross-collection updates, check out [this video](https://www.youtube.com/watch?v=9OsjUvk5UJU) which describes the concept in more detail, along with [this notebook](https://github.com/treeverse/lakeFS-samples/blob/main/01-multi-table-transaction-consistency-deltalake-lakefs/lakeFS-DeltaLake-multi-table-transaction-consistency.ipynb).
-
-
-
-### Establishing data quality guarantees - CI/CD for data
+### Establishing data quality guarantees - Write-Audit-Publish
 
 The best way to deal with mistakes is to avoid them. A data source that is ingested into the lake introducing low-quality data should be blocked before exposure if possible.
 
-With lakeFS, you can achieve this by tying data quality tests to commit and merge operations via lakeFS [hooks](./use_cases/cicd_for_data.md#using-hooks-as-data-quality-gates).
+With lakeFS, you can achieve this by tying data quality tests to commit and merge operations via lakeFS [hooks](./understand/use_cases/cicd_for_data.md#using-hooks-as-data-quality-gates).
 
-👉🏻 [Read more](/use_cases/cicd_for_data.html)
+👉🏻 [Read more](./understand/use_cases/cicd_for_data.html)
 
-## Downloads
+## Next Step
 
-{: .note}
-lakeFS is also available as a fully-managed hosted service on [lakeFS Cloud](https://lakefs.cloud/)
-
-### Binary Releases
-
-Binary packages are available for Linux/macOS/Windows on [GitHub Releases](https://github.com/treeverse/lakeFS/releases){: target="_blank" }
-
-### Docker Images
-
-The official Docker images are available at [https://hub.docker.com/r/treeverse/lakefs](https://hub.docker.com/r/treeverse/lakefs){: target="_blank" }
+Try lakeFS on the [cloud](https://lakefs.cloud/) or [run it locally](https://docs.lakefs.io/quickstart/)

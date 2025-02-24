@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/benburkert/dns"
 	"github.com/ory/dockertest/v3"
+	"github.com/treeverse/lakefs/pkg/block/azure"
 )
 
 const (
@@ -19,6 +20,7 @@ const (
 	containerName                  = "container1"
 	accountName                    = "account1"
 	accountKey                     = "key1"
+	domain                         = azure.BlobEndpointTestDomain // TLD for test
 )
 
 var (
@@ -26,7 +28,7 @@ var (
 	blockURL string
 )
 
-func createDNSResolver(domain string) {
+func createDNSResolver() {
 	zone := dns.Zone{
 		Origin: domain + ".",
 		TTL:    5 * time.Minute,
@@ -52,17 +54,15 @@ func createDNSResolver(domain string) {
 
 func runAzurite(dockerPool *dockertest.Pool) (string, func()) {
 	ctx := context.Background()
-	resource, err := dockerPool.Run("mcr.microsoft.com/azure-storage/azurite", "3.22.0", []string{
+	resource, err := dockerPool.Run("mcr.microsoft.com/azure-storage/azurite", "3.31.0", []string{
 		fmt.Sprintf("AZURITE_ACCOUNTS=%s:%s", accountName, accountKey),
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	domain := "azurite.test" // TLD for test
 	accountHost := accountName + "." + domain
-
-	createDNSResolver(domain)
+	createDNSResolver()
 
 	// set cleanup
 	closer := func() {
@@ -99,6 +99,7 @@ func runAzurite(dockerPool *dockertest.Pool) (string, func()) {
 	return url, closer
 }
 
+// Runs a container with mock Azure Blob Storage for use in package tests
 func TestMain(m *testing.M) {
 	var err error
 	pool, err = dockertest.NewPool("")

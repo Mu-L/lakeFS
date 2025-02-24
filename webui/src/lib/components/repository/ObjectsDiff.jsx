@@ -1,4 +1,4 @@
-import React from "react";
+import React, {useContext} from "react";
 import {useAPI} from "../../hooks/api";
 import {objects} from "../../api";
 import ReactDiffViewer, {DiffMethod} from "react-diff-viewer-continued";
@@ -6,11 +6,23 @@ import {AlertError, Loading} from "../controls";
 import {humanSize} from "./tree";
 import Alert from "react-bootstrap/Alert";
 import {InfoIcon} from "@primer/octicons-react";
+import {useStorageConfigs} from "../../hooks/storageConfig";
+import {AppContext} from "../../hooks/appContext";
+import {useRefs} from "../../hooks/repo";
+import {getRepoStorageConfig} from "../../../pages/repositories/repository/utils";
 
 const maxDiffSizeBytes = 120 << 10;
-const supportedReadableFormats = ["txt", "csv", "tsv"];
+const supportedReadableFormats = ["txt", "text", "csv", "tsv", "yaml", "yml", "json", "jsonl", "ndjson"];
 
 export const ObjectsDiff = ({diffType, repoId, leftRef, rightRef, path}) => {
+    const {repo, error: refsError, loading: refsLoading} = useRefs();
+    const {configs: storageConfigs, error: configsError, loading: storageConfigsLoading} = useStorageConfigs();
+    const {storageConfig, error: storageConfigError} = getRepoStorageConfig(storageConfigs, repo);
+    const hooksLoading = refsLoading || storageConfigsLoading;
+    const hooksError = hooksLoading ? null : refsError || configsError || storageConfigError;
+
+    if (hooksError) return <AlertError error={hooksError}/>;
+
     const readable = readableObject(path);
     let left;
     let right;
@@ -34,7 +46,7 @@ export const ObjectsDiff = ({diffType, repoId, leftRef, rightRef, path}) => {
             return <AlertError error={"Unsupported diff type " + diffType}/>;
     }
 
-    if ((left && left.loading) || (right && right.loading)) return <Loading/>;
+    if (hooksLoading || (left && left.loading) || (right && right.loading)) return <Loading/>;
     const err = (left && left.error) || (right && right.err);
     if (err) return <AlertError error={err}/>;
 
@@ -50,7 +62,7 @@ export const ObjectsDiff = ({diffType, repoId, leftRef, rightRef, path}) => {
     }
     const leftSize = leftStat && leftStat.size_bytes;
     const rightSize = rightStat && rightStat.size_bytes;
-    return <ContentDiff repoId={repoId} path={path} leftRef={left && leftRef} rightRef={right && rightRef}
+    return <ContentDiff config={storageConfig} repoId={repoId} path={path} leftRef={left && leftRef} rightRef={right && rightRef}
                         leftSize={leftSize} rightSize={rightSize} diffType={diffType}/>;
 }
 
@@ -64,16 +76,19 @@ function readableObject(path) {
 }
 
 const NoContentDiff = ({left, right, diffType}) => {
+    const supportedFileExtensions = supportedReadableFormats.map((fileType) => `.${fileType}`);
     return <div>
         <span><StatDiff left={left} right={right} diffType={diffType}/></span>
-        <span><Alert variant="light"><InfoIcon/> lakeFS supports content diff for .tsv, .csv, and .txt file formats only</Alert></span>
+        <span><Alert variant="light"><InfoIcon/> {`lakeFS supports content diff for ${supportedFileExtensions.join(',')} file formats only`}</Alert></span>
     </div>;
 }
 
-const ContentDiff = ({repoId, path, leftRef, rightRef, leftSize, rightSize, diffType}) => {
-    const left = leftRef && useAPI(async () => objects.get(repoId, leftRef, path),
+const ContentDiff = ({config, repoId, path, leftRef, rightRef, leftSize, rightSize, diffType}) => {
+    const {state} = useContext(AppContext);
+
+    const left = leftRef && useAPI(async () => objects.get(repoId, leftRef, path, config.pre_sign_support_ui),
         [repoId, leftRef, path]);
-    const right = rightRef && useAPI(async () => objects.get(repoId, rightRef, path),
+    const right = rightRef && useAPI(async () => objects.get(repoId, rightRef, path, config.pre_sign_support_ui),
         [repoId, rightRef, path]);
 
     if ((left && left.loading) || (right && right.loading)) return <Loading/>;
@@ -86,6 +101,7 @@ const ContentDiff = ({repoId, path, leftRef, rightRef, leftSize, rightSize, diff
             oldValue={left && left.response}
             newValue={right && right.response}
             splitView={false}
+            useDarkTheme={state.settings.darkMode}
             compareMethod={DiffMethod.WORDS}/>
     </div>;
 }

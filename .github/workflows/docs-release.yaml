@@ -11,16 +11,16 @@ on:
 jobs:
   docs-release:
     name: Documentation release
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Check-out
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           working-directory: docs
-          ruby-version: '2.7'
+          ruby-version: '3.2'
           bundler-cache: true # runs 'bundle install' and caches installed gems automatically
 
       - name: Extract version
@@ -35,7 +35,12 @@ jobs:
 
       - name: Build release
         working-directory: docs
-        run: bundle exec jekyll build --config _config.yml -d _site/${{ steps.version.outputs.tag }} -b /${{ steps.version.outputs.tag }}
+        run: bundle exec jekyll build --config _config.yml,_config.version.yml -d _site/${{ steps.version.outputs.tag }} -b /${{ steps.version.outputs.tag }}
+
+      - name: Remove robots.txt
+        working-directory: docs/_site/${{ steps.version.outputs.tag }}
+        run: |
+          if [[ -f robots.txt ]]; then rm robots.txt; fi
 
       - name: Update published version
         env:

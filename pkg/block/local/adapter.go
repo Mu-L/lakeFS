@@ -2,28 +2,28 @@ package local
 
 import (
 	"context"
+	// MD5 required for ETag computation.
 	"crypto/md5" //nolint:gosec
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/treeverse/lakefs/pkg/block"
 	"github.com/treeverse/lakefs/pkg/block/params"
-	"github.com/treeverse/lakefs/pkg/logging"
 	"golang.org/x/exp/slices"
 )
 
-const StoragePrefix = block.BlockstoreTypeLocal + "://"
+const DefaultNamespacePrefix = block.BlockstoreTypeLocal + "://"
 
 type Adapter struct {
 	path                    string
@@ -32,13 +32,8 @@ type Adapter struct {
 	importEnabled           bool
 }
 
-const (
-	DefaultNamespacePrefix = "local:/"
-)
-
 var (
 	ErrPathNotWritable       = errors.New("path provided is not writable")
-	ErrInventoryNotSupported = errors.New("inventory feature not implemented for local storage adapter")
 	ErrInvalidUploadIDFormat = errors.New("invalid upload id format")
 	ErrBadPath               = errors.New("bad path traversal blocked")
 )
@@ -86,7 +81,7 @@ func WithRemoveEmptyDir(b bool) func(a *Adapter) {
 func NewAdapter(path string, opts ...func(a *Adapter)) (*Adapter, error) {
 	// Clean() the path so that misconfiguration does not allow path traversal.
 	path = filepath.Clean(path)
-	err := os.MkdirAll(path, 0o700) //nolint: gomnd
+	err := os.MkdirAll(path, 0o700) //nolint: mnd
 	if err != nil {
 		return nil, err
 	}
@@ -103,8 +98,8 @@ func NewAdapter(path string, opts ...func(a *Adapter)) (*Adapter, error) {
 	return localAdapter, nil
 }
 
-func (l *Adapter) GetPreSignedURL(_ context.Context, _ block.ObjectPointer, _ block.PreSignMode) (string, error) {
-	return "", fmt.Errorf("local adapter: %w", block.ErrOperationNotSupported)
+func (l *Adapter) GetPreSignedURL(_ context.Context, _ block.ObjectPointer, _ block.PreSignMode) (string, time.Time, error) {
+	return "", time.Time{}, fmt.Errorf("local adapter presigned URL: %w", block.ErrOperationNotSupported)
 }
 
 // verifyRelPath ensures that p is under the directory controlled by this adapter.  It does not
@@ -117,19 +112,19 @@ func (l *Adapter) verifyRelPath(p string) error {
 }
 
 func (l *Adapter) extractParamsFromObj(ptr block.ObjectPointer) (string, error) {
-	if strings.HasPrefix(ptr.Identifier, StoragePrefix) {
+	if strings.HasPrefix(ptr.Identifier, DefaultNamespacePrefix) {
 		// check abs path
-		p := ptr.Identifier[len(StoragePrefix):]
+		p := ptr.Identifier[len(DefaultNamespacePrefix):]
 		if err := VerifyAbsPath(p, l.path, l.allowedExternalPrefixes); err != nil {
 			return "", err
 		}
 		return p, nil
 	}
 	// relative path
-	if !strings.HasPrefix(ptr.StorageNamespace, StoragePrefix) {
+	if !strings.HasPrefix(ptr.StorageNamespace, DefaultNamespacePrefix) {
 		return "", fmt.Errorf("%w: storage namespace", ErrBadPath)
 	}
-	p := path.Join(l.path, ptr.StorageNamespace[len(StoragePrefix):], ptr.Identifier)
+	p := path.Join(l.path, ptr.StorageNamespace[len(DefaultNamespacePrefix):], ptr.Identifier)
 	if err := l.verifyRelPath(p); err != nil {
 		return "", err
 	}
@@ -147,7 +142,7 @@ func (l *Adapter) maybeMkdir(path string, f func(p string) (*os.File, error)) (*
 		return ret, err
 	}
 	d := filepath.Dir(filepath.Clean(path))
-	if err = os.MkdirAll(d, 0o750); err != nil { //nolint: gomnd
+	if err = os.MkdirAll(d, 0o750); err != nil { //nolint: mnd
 		return nil, err
 	}
 	return f(path)
@@ -157,21 +152,24 @@ func (l *Adapter) Path() string {
 	return l.path
 }
 
-func (l *Adapter) Put(_ context.Context, obj block.ObjectPointer, _ int64, reader io.Reader, _ block.PutOpts) error {
+func (l *Adapter) Put(_ context.Context, obj block.ObjectPointer, _ int64, reader io.Reader, _ block.PutOpts) (*block.PutResponse, error) {
 	p, err := l.extractParamsFromObj(obj)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	p = filepath.Clean(p)
 	f, err := l.maybeMkdir(p, os.Create)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = f.Close()
 	}()
 	_, err = io.Copy(f, reader)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return &block.PutResponse{}, nil
 }
 
 func (l *Adapter) Remove(_ context.Context, obj block.ObjectPointer) error {
@@ -186,7 +184,7 @@ func (l *Adapter) Remove(_ context.Context, obj block.ObjectPointer) error {
 	}
 	if l.removeEmptyDir {
 		dir := filepath.Dir(p)
-		repoRoot := obj.StorageNamespace[len(StoragePrefix):]
+		repoRoot := obj.StorageNamespace[len(DefaultNamespacePrefix):]
 		removeEmptyDirUntil(dir, path.Join(l.path, repoRoot))
 	}
 	return nil
@@ -242,15 +240,20 @@ func (l *Adapter) UploadCopyPart(ctx context.Context, sourceObj, destinationObj 
 	if err := isValidUploadID(uploadID); err != nil {
 		return nil, err
 	}
-	r, err := l.Get(ctx, sourceObj, 0)
+	r, err := l.Get(ctx, sourceObj)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy get: %w", err)
 	}
 	md5Read := block.NewHashingReader(r, block.HashFunctionMD5)
 	fName := uploadID + fmt.Sprintf("-%05d", partNumber)
-	err = l.Put(ctx, block.ObjectPointer{StorageNamespace: destinationObj.StorageNamespace, Identifier: fName}, -1, md5Read, block.PutOpts{})
+	objectPointer := block.ObjectPointer{
+		StorageID:        destinationObj.StorageID,
+		StorageNamespace: destinationObj.StorageNamespace,
+		Identifier:       fName,
+	}
+	_, err = l.Put(ctx, objectPointer, -1, md5Read, block.PutOpts{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy put: %w", err)
 	}
 	etag := hex.EncodeToString(md5Read.Md5.Sum(nil))
 	return &block.UploadPartResponse{
@@ -264,13 +267,18 @@ func (l *Adapter) UploadCopyPartRange(ctx context.Context, sourceObj, destinatio
 	}
 	r, err := l.GetRange(ctx, sourceObj, startPosition, endPosition)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy range get: %w", err)
 	}
 	md5Read := block.NewHashingReader(r, block.HashFunctionMD5)
 	fName := uploadID + fmt.Sprintf("-%05d", partNumber)
-	err = l.Put(ctx, block.ObjectPointer{StorageNamespace: destinationObj.StorageNamespace, Identifier: fName}, -1, md5Read, block.PutOpts{})
+	objectPointer := block.ObjectPointer{
+		StorageID:        destinationObj.StorageID,
+		StorageNamespace: destinationObj.StorageNamespace,
+		Identifier:       fName,
+	}
+	_, err = l.Put(ctx, objectPointer, -1, md5Read, block.PutOpts{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy range put: %w", err)
 	}
 	etag := hex.EncodeToString(md5Read.Md5.Sum(nil))
 	return &block.UploadPartResponse{
@@ -278,12 +286,12 @@ func (l *Adapter) UploadCopyPartRange(ctx context.Context, sourceObj, destinatio
 	}, err
 }
 
-func (l *Adapter) Get(_ context.Context, obj block.ObjectPointer, _ int64) (reader io.ReadCloser, err error) {
+func (l *Adapter) Get(_ context.Context, obj block.ObjectPointer) (reader io.ReadCloser, err error) {
 	p, err := l.extractParamsFromObj(obj)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Clean(p), os.O_RDONLY, 0o600) //nolint: gomnd
+	f, err := os.OpenFile(filepath.Clean(p), os.O_RDONLY, 0o600) //nolint: mnd
 	if os.IsNotExist(err) {
 		return nil, block.ErrDataNotFound
 	}
@@ -293,12 +301,12 @@ func (l *Adapter) Get(_ context.Context, obj block.ObjectPointer, _ int64) (read
 	return f, nil
 }
 
-func (l *Adapter) GetWalker(uri *url.URL) (block.Walker, error) {
-	if err := block.ValidateStorageType(uri, block.StorageTypeLocal); err != nil {
+func (l *Adapter) GetWalker(_ string, opts block.WalkerOptions) (block.Walker, error) {
+	if err := block.ValidateStorageType(opts.StorageURI, block.StorageTypeLocal); err != nil {
 		return nil, err
 	}
-
-	err := VerifyAbsPath(uri.Path, l.path, l.allowedExternalPrefixes)
+	uriPath := strings.TrimSuffix(opts.StorageURI.Path, string(filepath.Separator))
+	err := VerifyAbsPath(uriPath, l.path, l.allowedExternalPrefixes)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +333,7 @@ func (l *Adapter) Exists(_ context.Context, obj block.ObjectPointer) (bool, erro
 }
 
 func (l *Adapter) GetRange(_ context.Context, obj block.ObjectPointer, start int64, end int64) (io.ReadCloser, error) {
-	if start < 0 || end <= 0 {
+	if start < 0 || end < start {
 		return nil, block.ErrBadIndex
 	}
 	p, err := l.extractParamsFromObj(obj)
@@ -382,7 +390,7 @@ func (l *Adapter) CreateMultiPartUpload(_ context.Context, obj block.ObjectPoint
 			return nil, err
 		}
 		fullDir := path.Dir(fullPath)
-		err = os.MkdirAll(fullDir, 0o750) //nolint: gomnd
+		err = os.MkdirAll(fullDir, 0o750) //nolint: mnd
 		if err != nil {
 			return nil, err
 		}
@@ -400,7 +408,12 @@ func (l *Adapter) UploadPart(ctx context.Context, obj block.ObjectPointer, _ int
 	}
 	md5Read := block.NewHashingReader(reader, block.HashFunctionMD5)
 	fName := uploadID + fmt.Sprintf("-%05d", partNumber)
-	err := l.Put(ctx, block.ObjectPointer{StorageNamespace: obj.StorageNamespace, Identifier: fName}, -1, md5Read, block.PutOpts{})
+	objectPointer := block.ObjectPointer{
+		StorageID:        obj.StorageID,
+		StorageNamespace: obj.StorageNamespace,
+		Identifier:       fName,
+	}
+	_, err := l.Put(ctx, objectPointer, -1, md5Read, block.PutOpts{})
 	etag := hex.EncodeToString(md5Read.Md5.Sum(nil))
 	return &block.UploadPartResponse{
 		ETag: etag,
@@ -451,6 +464,7 @@ func computeETag(parts []block.MultipartPart) string {
 	}
 	s := strings.Join(etagHex, "")
 	b, _ := hex.DecodeString(s)
+	// MD5 required for ETag computation.
 	md5res := md5.Sum(b) //nolint:gosec
 	csm := hex.EncodeToString(md5res[:])
 	return csm
@@ -507,6 +521,7 @@ func (l *Adapter) removePartFiles(files []string) error {
 
 func (l *Adapter) getPartFiles(uploadID string, obj block.ObjectPointer) ([]string, error) {
 	newObj := block.ObjectPointer{
+		StorageID:        obj.StorageID,
 		StorageNamespace: obj.StorageNamespace,
 		Identifier:       uploadID,
 	}
@@ -523,23 +538,23 @@ func (l *Adapter) getPartFiles(uploadID string, obj block.ObjectPointer) ([]stri
 	return names, nil
 }
 
-func (l *Adapter) GenerateInventory(_ context.Context, _ logging.Logger, _ string, _ bool, _ []string) (block.Inventory, error) {
-	return nil, ErrInventoryNotSupported
-}
-
 func (l *Adapter) BlockstoreType() string {
 	return block.BlockstoreTypeLocal
 }
 
-func (l *Adapter) GetStorageNamespaceInfo() block.StorageNamespaceInfo {
+func (l *Adapter) BlockstoreMetadata(_ context.Context) (*block.BlockstoreMetadata, error) {
+	return nil, block.ErrOperationNotSupported
+}
+
+func (l *Adapter) GetStorageNamespaceInfo(string) *block.StorageNamespaceInfo {
 	info := block.DefaultStorageNamespaceInfo(block.BlockstoreTypeLocal)
 	info.PreSignSupport = false
 	info.DefaultNamespacePrefix = DefaultNamespacePrefix
 	info.ImportSupport = l.importEnabled
-	return info
+	return &info
 }
 
-func (l *Adapter) ResolveNamespace(storageNamespace, key string, identifierType block.IdentifierType) (block.QualifiedKey, error) {
+func (l *Adapter) ResolveNamespace(storageID, storageNamespace, key string, identifierType block.IdentifierType) (block.QualifiedKey, error) {
 	qk, err := block.DefaultResolveNamespace(storageNamespace, key, identifierType)
 	if err != nil {
 		return nil, err
@@ -547,6 +562,7 @@ func (l *Adapter) ResolveNamespace(storageNamespace, key string, identifierType 
 
 	// Check if path allowed and return error if path is not allowed
 	_, err = l.extractParamsFromObj(block.ObjectPointer{
+		StorageID:        storageID,
 		StorageNamespace: storageNamespace,
 		Identifier:       key,
 		IdentifierType:   identifierType,
@@ -561,13 +577,17 @@ func (l *Adapter) ResolveNamespace(storageNamespace, key string, identifierType 
 	}, nil
 }
 
+func (l *Adapter) GetRegion(_ context.Context, _, _ string) (string, error) {
+	return "", block.ErrOperationNotSupported
+}
+
 func (l *Adapter) RuntimeStats() map[string]string {
 	return nil
 }
 
 func VerifyAbsPath(absPath, adapterPath string, allowedPrefixes []string) error {
 	// check we have a valid abs path
-	if !path.IsAbs(absPath) || path.Clean(absPath) != absPath {
+	if !filepath.IsAbs(absPath) || filepath.Clean(absPath) != absPath {
 		return ErrBadPath
 	}
 	// point to storage namespace
@@ -589,4 +609,15 @@ func isValidUploadID(uploadID string) error {
 		return fmt.Errorf("%w: %s", ErrInvalidUploadIDFormat, err)
 	}
 	return nil
+}
+
+func (l *Adapter) GetPresignUploadPartURL(_ context.Context, _ block.ObjectPointer, _ string, _ int) (string, error) {
+	return "", block.ErrOperationNotSupported
+}
+
+func (l *Adapter) ListParts(_ context.Context, _ block.ObjectPointer, _ string, _ block.ListPartsOpts) (*block.ListPartsResponse, error) {
+	return nil, block.ErrOperationNotSupported
+}
+func (l *Adapter) ListMultipartUploads(_ context.Context, _ block.ObjectPointer, _ block.ListMultipartUploadsOpts) (*block.ListMultipartUploadsResponse, error) {
+	return nil, block.ErrOperationNotSupported
 }

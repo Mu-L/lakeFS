@@ -35,8 +35,9 @@ import (
 
 // Streaming AWS Signature Version '4' constants.
 const (
-	emptySHA256            = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	signV4ChunkedAlgorithm = "AWS4-HMAC-SHA256-PAYLOAD"
+	// These constants are part of the AWS SigV4 spec, so they are safe.
+	emptySHA256            = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" //nolint:gosec
+	signV4ChunkedAlgorithm = "AWS4-HMAC-SHA256-PAYLOAD"                                         //nolint:gosec
 	SlashSeparator         = "/"
 )
 
@@ -76,7 +77,7 @@ var (
 	// lineTooLong is generated as chunk header is bigger than 4KiB.
 	errLineTooLong = errors.New("header line too long")
 
-	// Malformed encoding is generated when chunk header is wrongly formed.
+	// Malformed encoding is generated when a chunk header is wrongly formed.
 	errMalformedEncoding = errors.New("malformed chunked encoding")
 
 	ErrInvalidByte   = errors.New("invalid byte in chunk length")
@@ -106,7 +107,7 @@ func newSignV4ChunkedReader(reader *bufio.Reader, amzDate string, auth V4Auth, c
 	}, nil
 }
 
-// Represents the overall state that is required for decoding a
+// Represents the overall state that is required for decoding an
 // AWS Signature V4 chunked reader.
 type s3ChunkedReader struct {
 	reader            *bufio.Reader
@@ -226,7 +227,8 @@ func (cr *s3ChunkedReader) Read(buf []byte) (n int, err error) {
 			n += n0
 			buf = buf[n0:]
 			// Update bytes to be read of the current chunk before verifying chunk's signature.
-			cr.n -= uint64(n0)
+			// n >= n0 >= 0, cast is safe
+			cr.n -= uint64(n0) //nolint:gosec
 
 			// If we're at the end of a chunk.
 			if cr.n == 0 {
@@ -259,8 +261,8 @@ func (cr *s3ChunkedReader) Read(buf []byte) (n int, err error) {
 // readCRLF - check if reader only has '\r\n' CRLF character.
 // returns malformed encoding if it doesn't.
 func readCRLF(reader io.Reader) error {
-	buf := make([]byte, 2)                 //nolint: gomnd
-	_, err := io.ReadFull(reader, buf[:2]) //nolint: gomnd
+	buf := make([]byte, 2)                 //nolint: mnd
+	_, err := io.ReadFull(reader, buf[:2]) //nolint: mnd
 	if err != nil {
 		return err
 	}
@@ -326,7 +328,7 @@ func parseS3ChunkExtension(buf []byte) ([]byte, []byte) {
 
 // parseChunkSignature - parse chunk signature.
 func parseChunkSignature(chunk []byte) []byte {
-	chunkSplits := bytes.SplitN(chunk, []byte(s3ChunkSignatureStr), 2) //nolint: gomnd
+	chunkSplits := bytes.SplitN(chunk, []byte(s3ChunkSignatureStr), 2) //nolint: mnd
 	return chunkSplits[1]
 }
 

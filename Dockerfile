@@ -1,112 +1,54 @@
-# Build lakeFS
-FROM --platform=$BUILDPLATFORM golang:1.19.2-alpine3.16 AS build
-
+# syntax=docker/dockerfile:1
 ARG VERSION=dev
 
+ARG BUILD_REPO=golang
+ARG BUILD_TAG=1.23-alpine
+ARG BUILD_PACKAGES="build-base ca-certificates"
+
+ARG IMAGE_REPO=alpine
+ARG IMAGE_TAG=3.21
+ARG IMAGE_PACKAGES=ca-certificates
+
+ARG ADD_PACKAGES="apk add -U --no-cache"
+
+
+FROM --platform=$BUILDPLATFORM $BUILD_REPO:$BUILD_TAG AS build
+ARG ADD_PACKAGES BUILD_PACKAGES
+
 WORKDIR /build
-
-# Packages required to build
-RUN apk add --no-cache build-base
-
-# Copy project deps first since they don't change often
+RUN $ADD_PACKAGES $BUILD_PACKAGES
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg go mod download
-
-# Copy project
 COPY . ./
 
-# Build a binaries
-ARG TARGETOS TARGETARCH
+FROM build AS build-lakefs
+ARG VERSION TARGETOS TARGETARCH ADD_PACKAGES BUILD_PACKAGES
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -ldflags "-X github.com/treeverse/lakefs/pkg/version.Version=${VERSION}" -o lakefs ./cmd/lakefs
+
+FROM build AS build-lakectl
+ARG VERSION TARGETOS TARGETARCH ADD_PACKAGES BUILD_PACKAGES
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -ldflags "-X github.com/treeverse/lakefs/pkg/version.Version=${VERSION}" -o lakectl ./cmd/lakectl
 
-
-# Build delta diff binary
-FROM --platform=$BUILDPLATFORM rust:1.68-alpine3.16 AS build-delta-diff-plugin
-RUN apk update && apk add build-base pkgconfig openssl-dev alpine-sdk
-RUN cargo new --bin delta-diff
-WORKDIR /delta-diff
-
-# 2. Copy our manifests
-COPY ./pkg/plugins/diff/delta_diff_server/Cargo.lock ./Cargo.lock
-COPY ./pkg/plugins/diff/delta_diff_server/Cargo.toml ./Cargo.toml
-
-# 3. Build only the dependencies to cache them in this layer
-
-# Rust default behavior is to build a static binary (default target is <arch>-unknown-linux-musl on Alpine, and musl
-# is assumed to be static). It links to openssl statically, but these are dynamic libraries. Setting RUSTFLAGS=-Ctarget-feature=-crt-static
-# forces Rust to create a dynamic binary, despite asking for musl.
-RUN RUSTFLAGS=-Ctarget-feature=-crt-static cargo build --release
-RUN rm src/*.rs
-
-# 4. Now that the dependency is built, copy your source code
-COPY ./pkg/plugins/diff/delta_diff_server/src ./src
-
-# 5. Build for release.
-RUN rm ./target/release/deps/delta_diff*
-RUN RUSTFLAGS=-Ctarget-feature=-crt-static cargo build --release
-
-# Just lakectl
-FROM --platform=$BUILDPLATFORM alpine:3.16.0 AS lakectl
-RUN apk add -U --no-cache ca-certificates
+FROM $IMAGE_REPO:$IMAGE_TAG AS lakectl
+ARG ADD_PACKAGES IMAGE_PACKAGES
 WORKDIR /app
-ENV PATH /app:$PATH
-COPY --from=build /build/lakectl ./
+ENV PATH=/app:$PATH
+COPY --from=build-lakectl /build/lakectl /app/
+RUN $ADD_PACKAGES $IMAGE_PACKAGES
 RUN addgroup -S lakefs && adduser -S lakefs -G lakefs
 USER lakefs
 WORKDIR /home/lakefs
 ENTRYPOINT ["/app/lakectl"]
 
-# lakefs with lakectl
-FROM --platform=$BUILDPLATFORM alpine:3.16.0 AS lakefs
-
-RUN apk add -U --no-cache ca-certificates
-# Be Docker compose friendly (i.e. support wait-for)
-RUN apk add netcat-openbsd
-
-WORKDIR /app
-COPY ./scripts/wait-for ./
-ENV PATH /app:$PATH
-COPY --from=build /build/lakefs /build/lakectl ./
-
+FROM lakectl AS lakefs
+COPY ./scripts/wait-for /app/
+COPY --from=build-lakefs /build/lakefs /app/
 EXPOSE 8000/tcp
-
-# Setup user
-RUN addgroup -S lakefs && adduser -S lakefs -G lakefs
-USER lakefs
-WORKDIR /home/lakefs
-
-ENTRYPOINT ["/app/lakefs"]
-CMD ["run"]
-
-# Include lakefs-plugins
-FROM --platform=$BUILDPLATFORM alpine:3.16.0 AS lakefs-plugins
-
-RUN apk add -U --no-cache ca-certificates
-RUN apk add openssl-dev libc6-compat alpine-sdk
-# Be Docker compose friendly (i.e. support wait-for)
-RUN apk add netcat-openbsd
-
-WORKDIR /app
-COPY ./scripts/wait-for ./
-ENV PATH /app:$PATH
-COPY --from=build /build/lakefs /build/lakectl ./
-COPY --from=build-delta-diff-plugin /delta-diff/target/release/delta_diff ./
-
-EXPOSE 8000/tcp
-
-# Setup user
-RUN addgroup -S lakefs && adduser -S lakefs -G lakefs
-USER lakefs
-WORKDIR /home/lakefs
-
-RUN mkdir -p /home/lakefs/.lakefs/plugins/diff && ln -s /app/delta_diff /home/lakefs/.lakefs/plugins/diff/delta
-
 ENTRYPOINT ["/app/lakefs"]
 CMD ["run"]

@@ -5,21 +5,23 @@ NPM=$(or $(shell which npm), $(error "Missing dependency - no npm in PATH"))
 
 UID_GID := $(shell id -u):$(shell id -g)
 
-# Protoc is a Docker dependency (since it's a pain to install locally and manage versions of it)
-PROTOC_IMAGE="treeverse/protoc:3.14.0"
-PROTOC=$(DOCKER) run --rm -v $(shell pwd):/mnt $(PROTOC_IMAGE)
-
 CLIENT_JARS_BUCKET="s3://treeverse-clients-us-east/"
 
 # https://openapi-generator.tech
-OPENAPI_GENERATOR_IMAGE=openapitools/openapi-generator-cli:v5.3.0
+OPENAPI_GENERATOR_IMAGE=treeverse/openapi-generator-cli:v7.0.1.1
 OPENAPI_GENERATOR=$(DOCKER) run --user $(UID_GID) --rm -v $(shell pwd):/mnt $(OPENAPI_GENERATOR_IMAGE)
+OPENAPI_RUST_GENERATOR_IMAGE=openapitools/openapi-generator-cli:v7.5.0
+OPENAPI_RUST_GENERATOR=$(DOCKER) run --user $(UID_GID) --rm -v $(shell pwd):/mnt $(OPENAPI_RUST_GENERATOR_IMAGE)
+PY_OPENAPI_GENERATOR=$(DOCKER) run -e PYTHON_POST_PROCESS_FILE="/mnt/clients/python/scripts/pydantic.sh" --user $(UID_GID) --rm -v $(shell pwd):/mnt $(OPENAPI_GENERATOR_IMAGE)
+
+GOLANGCI_LINT_VERSION=v1.63.4
+BUF_CLI_VERSION=v1.28.1
 
 ifndef PACKAGE_VERSION
 	PACKAGE_VERSION=0.1.0-SNAPSHOT
 endif
 
-PYTHON_IMAGE=python:3
+PYTHON_IMAGE=python:3.9
 
 export PATH:= $(PATH):$(GOBINPATH)
 
@@ -43,7 +45,6 @@ UI_BUILD_DIR=$(UI_DIR)/dist
 
 DOCKER_IMAGE=lakefs
 DOCKER_TAG=dev
-DOCKER_WITH_DUCKDB_TAG=$(DOCKER_TAG)-duckdb
 VERSION=dev
 export VERSION
 
@@ -63,8 +64,8 @@ clean:
 		$(LAKEFS_BINARY_NAME) \
 		$(UI_BUILD_DIR) \
 		$(UI_DIR)/node_modules \
-		pkg/api/lakefs.gen.go \
-		pkg/auth/client.gen.go
+		pkg/api/apigen/lakefs.gen.go \
+		pkg/auth/*.gen.go
 
 check-licenses: check-licenses-go-mod check-licenses-npm
 
@@ -84,7 +85,7 @@ docs/assets/js/swagger.yml: api/swagger.yml
 docs: docs/assets/js/swagger.yml
 
 docs-serve: ### Serve local docs
-	cd docs; bundle exec jekyll serve
+	cd docs; bundle exec jekyll serve --livereload
 
 docs-serve-docker: ### Serve local docs from Docker
 	docker run --rm \
@@ -94,7 +95,7 @@ docs-serve-docker: ### Serve local docs from Docker
 			--volume="$$PWD/docs:/srv/jekyll:Z" \
 			--volume="$$PWD/docs/.jekyll-bundle-cache:/usr/local/bundle:Z" \
 			--interactive --tty \
-			jekyll/jekyll:3.8 \
+			jekyll/jekyll:4.2.2 \
 			jekyll serve --livereload
 
 gen-docs: ## Generate CLI docs automatically
@@ -103,72 +104,92 @@ gen-docs: ## Generate CLI docs automatically
 gen-metastore: ## Run Metastore Code generation
 	@thrift -r --gen go --gen go:package_prefix=github.com/treeverse/lakefs/pkg/metastore/hive/gen-go/ -o pkg/metastore/hive pkg/metastore/hive/hive_metastore.thrift
 
-go-mod-download: ## Download module dependencies
-	$(GOCMD) mod download
+tools: ## Install tools
+	$(GOCMD) install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(GOCMD) install github.com/bufbuild/buf/cmd/buf@$(BUF_CLI_VERSION)
 
-go-install: go-mod-download ## Install dependencies
-	$(GOCMD) install github.com/golangci/golangci-lint/cmd/golangci-lint
-	$(GOCMD) install google.golang.org/protobuf/cmd/protoc-gen-go
+client-python: sdk-python
 
-
-client-python: api/swagger.yml  ## Generate SDK for Python client
-	# remove the build folder as it also holds lakefs_client folder which keeps because we skip it during find
+sdk-python: api/swagger.yml  ## Generate SDK for Python client - openapi generator version 7.0.0
+	# remove the build folder as it also holds lakefs_sdk folder which keeps because we skip it during find
 	rm -rf clients/python/build; cd clients/python && \
-		find . -depth -name lakefs_client -prune -o ! \( -name client.py -or -name Gemfile -or -name Gemfile.lock -or -name _config.yml -or -name .openapi-generator-ignore -or -name templates -or -name setup.mustache \) -delete
-	$(OPENAPI_GENERATOR) generate \
+		find . -depth -name lakefs_sdk -prune -o ! \( -name Gemfile -or -name Gemfile.lock -or -name _config.yml -or -name .openapi-generator-ignore -or -name templates -or -name setup.mustache -or -name client.mustache -or -name requirements.mustache -or -name scripts -or -name pydantic.sh -or -name python-codegen-config.yaml \) -delete
+	$(PY_OPENAPI_GENERATOR) generate \
+		--enable-post-process-file \
 		-i /mnt/$< \
 		-g python \
 		-t /mnt/clients/python/templates \
-		--package-name lakefs_client \
+		--package-name lakefs_sdk \
 		--http-user-agent "lakefs-python-sdk/$(PACKAGE_VERSION)" \
 		--git-user-id treeverse --git-repo-id lakeFS \
-		--additional-properties=infoName=Treeverse,infoEmail=services@treeverse.io,packageName=lakefs_client,packageVersion=$(PACKAGE_VERSION),projectName=lakefs-client,packageUrl=https://github.com/treeverse/lakeFS/tree/master/clients/python \
-		-o /mnt/clients/python
+		--additional-properties=infoName=Treeverse,infoEmail=services@treeverse.io,packageVersion=$(PACKAGE_VERSION),projectName=lakefs-sdk,packageUrl=https://github.com/treeverse/lakeFS/tree/master/clients/python \
+		-c /mnt/clients/python/python-codegen-config.yaml \
+		-o /mnt/clients/python \
+		--ignore-file-override /mnt/clients/python/.openapi-generator-ignore
 
-client-java: api/swagger.yml  ## Generate SDK for Java (and Scala) client
+sdk-rust: api/swagger.yml  ## Generate SDK for Rust client - openapi generator version 7.1.0
+	rm -rf clients/rust
+	mkdir -p clients/rust
+	$(OPENAPI_RUST_GENERATOR) generate \
+		-i /mnt/api/swagger.yml \
+		-g rust \
+		--additional-properties=infoName=Treeverse,infoEmail=services@treeverse.io,packageName=lakefs_sdk,packageVersion=$(PACKAGE_VERSION),packageUrl=https://github.com/treeverse/lakeFS/tree/master/clients/rust \
+		-o /mnt/clients/rust
+
+client-java: api/swagger.yml api/java-gen-ignore  ## Generate SDK for Java (and Scala) client
 	rm -rf clients/java
+	mkdir -p clients/java
+	cp api/java-gen-ignore clients/java/.openapi-generator-ignore
 	$(OPENAPI_GENERATOR) generate \
-		-i /mnt/$< \
+		-i /mnt/api/swagger.yml \
 		-g java \
-		--invoker-package io.lakefs.clients.api \
-		--http-user-agent "lakefs-java-sdk/$(PACKAGE_VERSION)" \
-		--additional-properties=hideGenerationTimestamp=true,artifactVersion=$(PACKAGE_VERSION),parentArtifactId=lakefs-parent,parentGroupId=io.lakefs,parentVersion=0,groupId=io.lakefs,artifactId='api-client',artifactDescription='lakeFS OpenAPI Java client',artifactUrl=https://lakefs.io,apiPackage=io.lakefs.clients.api,modelPackage=io.lakefs.clients.api.model,mainPackage=io.lakefs.clients.api,developerEmail=services@treeverse.io,developerName='Treeverse lakeFS dev',developerOrganization='lakefs.io',developerOrganizationUrl='https://lakefs.io',licenseName=apache2,licenseUrl=http://www.apache.org/licenses/,scmConnection=scm:git:git@github.com:treeverse/lakeFS.git,scmDeveloperConnection=scm:git:git@github.com:treeverse/lakeFS.git,scmUrl=https://github.com/treeverse/lakeFS \
+		--invoker-package io.lakefs.clients.sdk \
+		--http-user-agent "lakefs-java-sdk/$(PACKAGE_VERSION)-v1" \
+		--additional-properties disallowAdditionalPropertiesIfNotPresent=false,useSingleRequestParameter=true,hideGenerationTimestamp=true,artifactVersion=$(PACKAGE_VERSION),parentArtifactId=lakefs-parent,parentGroupId=io.lakefs,parentVersion=0,groupId=io.lakefs,artifactId='sdk',artifactDescription='lakeFS OpenAPI Java client',artifactUrl=https://lakefs.io,apiPackage=io.lakefs.clients.sdk,modelPackage=io.lakefs.clients.sdk.model,mainPackage=io.lakefs.clients.sdk,developerEmail=services@treeverse.io,developerName='Treeverse lakeFS dev',developerOrganization='lakefs.io',developerOrganizationUrl='https://lakefs.io',licenseName=apache2,licenseUrl=http://www.apache.org/licenses/,scmConnection=scm:git:git@github.com:treeverse/lakeFS.git,scmDeveloperConnection=scm:git:git@github.com:treeverse/lakeFS.git,scmUrl=https://github.com/treeverse/lakeFS \
 		-o /mnt/clients/java
 
-.PHONY: clients client-python client-java
-clients: client-python client-java
+.PHONY: clients client-python sdk-python client-java
+clients: client-python client-java sdk-rust
 
-package-python: client-python
+package-python: package-python-sdk package-python-wrapper
+
+package-python-sdk: sdk-python
 	$(DOCKER) run --user $(UID_GID) --rm -v $(shell pwd):/mnt -e HOME=/tmp/ -w /mnt/clients/python $(PYTHON_IMAGE) /bin/bash -c \
+		"python -m pip install build --user && python -m build --sdist --wheel --outdir dist/"
+
+package-python-wrapper:
+	$(DOCKER) run --user $(UID_GID) --rm -v $(shell pwd):/mnt -e HOME=/tmp/ -w /mnt/clients/python-wrapper $(PYTHON_IMAGE) /bin/bash -c \
 		"python -m pip install build --user && python -m build --sdist --wheel --outdir dist/"
 
 package: package-python
 
 .PHONY: gen-api
 gen-api: docs/assets/js/swagger.yml ## Run the swagger code generator
-	$(GOGENERATE) \
-		./pkg/api \
-		./pkg/auth
+	$(GOGENERATE) ./pkg/api/apigen ./pkg/auth ./pkg/authentication
 
 .PHONY: gen-code
 gen-code: gen-api ## Run the generator for inline commands
 	$(GOGENERATE) \
 		./pkg/actions \
+		./pkg/auth/ \
+		./pkg/authentication \
+		./pkg/distributed \
 		./pkg/graveler \
 		./pkg/graveler/committed \
 		./pkg/graveler/sstable \
 		./pkg/kv \
 		./pkg/permissions \
-		./pkg/pyramid
+		./pkg/pyramid \
+		./tools/wrapgen/testcode
 
 LD_FLAGS := "-X github.com/treeverse/lakefs/pkg/version.Version=$(VERSION)-$(REVISION)"
 build: gen docs ## Download dependencies and build the default binary
 	$(GOBUILD) -o $(LAKEFS_BINARY_NAME) -ldflags $(LD_FLAGS) -v ./cmd/$(LAKEFS_BINARY_NAME)
 	$(GOBUILD) -o $(LAKECTL_BINARY_NAME) -ldflags $(LD_FLAGS) -v ./cmd/$(LAKECTL_BINARY_NAME)
 
-lint: go-install  ## Lint code
-	$(GOBINPATH)/golangci-lint run $(GOLANGCI_LINT_FLAGS)
-	npx eslint $(UI_DIR)/src --ext .js,.jsx,.ts,.tsx
+lint: ## Lint code
+	$(GOCMD) run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run $(GOLANGCI_LINT_FLAGS)
+	npx eslint@8.57.0 $(UI_DIR)/src --ext .js,.jsx,.ts,.tsx
 
 esti: ## run esti (system testing)
 	$(GOTEST) -v ./esti --args --system-tests
@@ -176,7 +197,7 @@ esti: ## run esti (system testing)
 test: test-go test-hadoopfs  ## Run tests for the project
 
 test-go: gen-api			# Run parallelism > num_cores: most of our slow tests are *not* CPU-bound.
-	$(GOTEST) -count=1 -coverprofile=cover.out -race -cover -failfast -parallel="$(GOTEST_PARALLELISM)" ./...
+	go list -f '{{.Dir}}/...' -m | xargs $(GOTEST) -count=1 -coverprofile=cover.out -race -cover -failfast -parallel="$(GOTEST_PARALLELISM)" ./...
 
 test-hadoopfs:
 	cd clients/hadoopfs && mvn test
@@ -194,8 +215,7 @@ system-tests: # Run system tests locally
 	./esti/scripts/runner.sh -r all
 
 build-docker: build ## Build Docker image file (Docker required)
-	$(DOCKER) buildx build --target lakefs-plugins -t treeverse/$(DOCKER_IMAGE):$(DOCKER_TAG) .
-	$(DOCKER) buildx build -t treeverse/$(DOCKER_IMAGE):$(DOCKER_WITH_DUCKDB_TAG) .
+	$(DOCKER) buildx build --target lakefs -t treeverse/$(DOCKER_IMAGE):$(DOCKER_TAG) .
 
 gofmt:  ## gofmt code formating
 	@echo Running go formating with the following command:
@@ -203,7 +223,7 @@ gofmt:  ## gofmt code formating
 
 validate-fmt:  ## Validate go format
 	@echo checking gofmt...
-	@res=$$($(GOFMT) -d -e -s $$(find . -type d \( -path ./pkg/metastore/hive/gen-go \) -prune -o \( -path ./pkg/ddl \) -prune -o \( -path ./pkg/webui \) -prune -o \( -path ./pkg/api/gen \) -prune -o \( -path ./pkg/permissions/*.gen.go \) -prune -o -name '*.go' -print)); \
+	@res=$$($(GOFMT) -d -e -s $$(find . -type d \( -path ./pkg/metastore/hive/gen-go \) -prune -prune -o \( -path ./pkg/api/gen \) -prune -o \( -path ./pkg/permissions/*.gen.go \) -prune -o -name '*.go' -print)); \
 	if [ -n "$${res}" ]; then \
 		echo checking gofmt fail... ; \
 		echo "$${res}"; \
@@ -213,7 +233,7 @@ validate-fmt:  ## Validate go format
 	fi
 
 .PHONY: validate-proto
-validate-proto: proto  ## build proto and check if diff found
+validate-proto: gen-proto  ## build proto and check if diff found
 	git diff --quiet -- pkg/actions/actions.pb.go || (echo "Modification verification failed! pkg/actions/actions.pb.go"; false)
 	git diff --quiet -- pkg/auth/model/model.pb.go || (echo "Modification verification failed! pkg/auth/model/model.pb.go"; false)
 	git diff --quiet -- pkg/catalog/catalog.pb.go || (echo "Modification verification failed! pkg/catalog/catalog.pb.go"; false)
@@ -228,6 +248,7 @@ validate-proto: proto  ## build proto and check if diff found
 validate-mockgen: gen-code
 	git diff --quiet -- pkg/actions/mock/mock_actions.go || (echo "Modification verification failed! pkg/actions/mock/mock_actions.go"; false)
 	git diff --quiet -- pkg/auth/mock/mock_auth_client.go || (echo "Modification verification failed! pkg/auth/mock/mock_auth_client.go"; false)
+	git diff --quiet -- pkg/authentication/api/mock_authentication_client.go || (echo "Modification verification failed! pkg/authentication/api/mock_authentication_client.go"; false)
 	git diff --quiet -- pkg/graveler/committed/mock/batch_write_closer.go || (echo "Modification verification failed! pkg/graveler/committed/mock/batch_write_closer.go"; false)
 	git diff --quiet -- pkg/graveler/committed/mock/meta_range.go || (echo "Modification verification failed! pkg/graveler/committed/mock/meta_range.go"; false)
 	git diff --quiet -- pkg/graveler/committed/mock/range_manager.go || (echo "Modification verification failed! pkg/graveler/committed/mock/range_manager.go"; false)
@@ -239,17 +260,46 @@ validate-mockgen: gen-code
 validate-permissions-gen: gen-code
 	git diff --quiet -- pkg/permissions/actions.gen.go || (echo "Modification verification failed!  pkg/permissions/actions.gen.go"; false)
 
+.PHONY: validate-wrapper
+validate-wrapper: gen-code
+	git diff --quiet -- pkg/auth/service_wrapper.gen.go || (echo "Modification verification failed! pkg/auth/service_wrapper.gen.go"; false)
+	git diff --quiet -- pkg/auth/service_inviter_wrapper.gen.go || (echo "Modification verification failed! pkg/auth/service_inviter_wrapper.gen.go"; false)
+
+.PHONY: validate-wrapgen-testcode
+validate-wrapgen-testcode: gen-code
+	git diff --quiet -- ./tools/wrapgen/testcode || (echo "Modification verification failed! tools/wrapgen/testcode"; false)
+
 validate-reference:
 	git diff --quiet -- docs/reference/cli.md || (echo "Modification verification failed! docs/reference/cli.md"; false)
 
-validate-client-python:
+validate-client-python: validate-python-sdk
+
+validate-python-sdk:
 	git diff --quiet -- clients/python || (echo "Modification verification failed! python client"; false)
 
 validate-client-java:
 	git diff --quiet -- clients/java || (echo "Modification verification failed! java client"; false)
 
+validate-client-rust:
+	git diff --quiet -- clients/rust || (echo "Modification verification failed! rust client"; false)
+
+validate-python-wrapper:
+	sphinx-apidoc -o clients/python-wrapper/docs clients/python-wrapper/lakefs sphinx-apidoc --full -A 'Treeverse' -eq
+	git diff --quiet -- clients/python-wrapper || (echo 'Modification verification failed! python wrapper client'; false)
+
 # Run all validation/linting steps
-checks-validator: lint validate-fmt validate-proto validate-client-python validate-client-java validate-reference validate-mockgen validate-permissions-gen
+checks-validator: lint validate-fmt validate-proto \
+	validate-client-python validate-client-java validate-client-rust validate-reference \
+	validate-mockgen \
+	validate-permissions-gen \
+	validate-wrapper validate-wrapgen-testcode
+
+python-wrapper-lint:
+	$(DOCKER) run --user $(UID_GID) --rm -v $(shell pwd):/mnt -e HOME=/tmp/ -w /mnt/clients/python-wrapper $(PYTHON_IMAGE) /bin/bash -c "./pylint.sh"
+
+python-wrapper-gen-docs:
+	sphinx-build -b html -W clients/python-wrapper/docs clients/python-wrapper/_site/
+	sphinx-build -b html -W clients/python-wrapper/docs clients/python-wrapper/_site/$$(python clients/python-wrapper/setup.py --version)
 
 $(UI_DIR)/node_modules:
 	cd $(UI_DIR) && $(NPM) install
@@ -257,16 +307,8 @@ $(UI_DIR)/node_modules:
 gen-ui: $(UI_DIR)/node_modules  ## Build UI web app
 	cd $(UI_DIR) && $(NPM) run build
 
-proto: go-install ## Build proto (Protocol Buffers) files
-	$(PROTOC) --proto_path=pkg/actions --go_out=pkg/actions --go_opt=paths=source_relative actions.proto
-	$(PROTOC) --proto_path=pkg/auth/model --go_out=pkg/auth/model --go_opt=paths=source_relative model.proto
-	$(PROTOC) --proto_path=pkg/catalog --go_out=pkg/catalog --go_opt=paths=source_relative catalog.proto
-	$(PROTOC) --proto_path=pkg/gateway/multipart --go_out=pkg/gateway/multipart --go_opt=paths=source_relative multipart.proto
-	$(PROTOC) --proto_path=pkg/graveler --go_out=pkg/graveler --go_opt=paths=source_relative graveler.proto
-	$(PROTOC) --proto_path=pkg/graveler/committed --go_out=pkg/graveler/committed --go_opt=paths=source_relative committed.proto
-	$(PROTOC) --proto_path=pkg/graveler/settings --go_out=pkg/graveler/settings --go_opt=paths=source_relative test_settings.proto
-	$(PROTOC) --proto_path=pkg/kv --go_out=pkg/kv --go_opt=paths=source_relative secondary_index.proto
-	$(PROTOC) --proto_path=pkg/kv/kvtest --go_out=pkg/kv/kvtest --go_opt=paths=source_relative test_model.proto
+gen-proto: ## Build Protocol Buffers (proto) files using Buf CLI
+	go run github.com/bufbuild/buf/cmd/buf@$(BUF_CLI_VERSION) generate
 
 publish-scala: ## sbt publish spark client jars to nexus and s3 bucket
 	cd clients/spark && sbt assembly && sbt s3Upload && sbt publishSigned
@@ -280,8 +322,7 @@ help:  ## Show Help menu
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 # helpers
-gen: gen-ui gen-api clients gen-docs
+gen: gen-ui gen-api gen-code clients gen-docs
 
-delta-plugin: ## Build delta plugin
-	cargo clean --manifest-path pkg/plugins/diff/delta_diff_server/Cargo.toml
-	cargo build --release --manifest-path pkg/plugins/diff/delta_diff_server/Cargo.toml
+validate-clients-untracked-files:
+	scripts/verify_clients_untracked_files.sh	

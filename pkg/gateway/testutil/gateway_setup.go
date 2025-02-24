@@ -15,9 +15,9 @@ import (
 	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/gateway"
 	"github.com/treeverse/lakefs/pkg/gateway/multipart"
-	"github.com/treeverse/lakefs/pkg/kv/kvtest"
+	"github.com/treeverse/lakefs/pkg/kv"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
 	_ "github.com/treeverse/lakefs/pkg/kv/mem"
-	kvparams "github.com/treeverse/lakefs/pkg/kv/params"
 	"github.com/treeverse/lakefs/pkg/logging"
 	"github.com/treeverse/lakefs/pkg/stats"
 	"github.com/treeverse/lakefs/pkg/testutil"
@@ -34,21 +34,22 @@ func GetBasicHandler(t *testing.T, authService *FakeAuthService, repoName string
 	ctx := context.Background()
 	viper.Set(config.BlockstoreTypeKey, block.BlockstoreTypeMem)
 
-	store := kvtest.MakeStoreByName("mem", kvparams.Config{})(t, ctx)
+	store, err := kv.Open(ctx, kvparams.Config{Type: "mem"})
+	testutil.MustDo(t, "open kv store", err)
 	defer store.Close()
 	multipartTracker := multipart.NewTracker(store)
 
 	blockstoreType, _ := os.LookupEnv(testutil.EnvKeyUseBlockAdapter)
 	blockAdapter := testutil.NewBlockAdapterByType(t, blockstoreType)
 
-	conf, err := config.NewConfig()
+	conf := &config.BaseConfig{}
+	conf, err = config.NewConfig("", conf)
 	testutil.MustDo(t, "config", err)
 
 	c, err := catalog.New(ctx, catalog.Config{
 		Config:       conf,
 		KVStore:      store,
 		PathProvider: upload.DefaultPathProvider,
-		Limiter:      conf.NewGravelerBackgroundLimiter(),
 	})
 	testutil.MustDo(t, "build catalog", err)
 	t.Cleanup(func() {
@@ -60,22 +61,10 @@ func GetBasicHandler(t *testing.T, authService *FakeAuthService, repoName string
 		storageNamespace = "replay"
 	}
 
-	_, err = c.CreateRepository(ctx, repoName, storageNamespace, "main")
+	_, err = c.CreateRepository(ctx, repoName, "", storageNamespace, "main", false)
 	testutil.Must(t, err)
 
-	handler := gateway.NewHandler(
-		authService.Region,
-		c,
-		multipartTracker,
-		blockAdapter,
-		authService,
-		[]string{authService.BareDomain},
-		&stats.NullCollector{},
-		upload.DefaultPathProvider,
-		nil,
-		config.DefaultLoggingAuditLogLevel,
-		true,
-	)
+	handler := gateway.NewHandler(authService.Region, c, multipartTracker, blockAdapter, authService, []string{authService.BareDomain}, &stats.NullCollector{}, upload.DefaultPathProvider, nil, config.DefaultLoggingAuditLogLevel, true, false, false)
 
 	return handler, &Dependencies{
 		blocks:  blockAdapter,
@@ -94,7 +83,7 @@ type FakeAuthService struct {
 
 func (m *FakeAuthService) GetCredentials(_ context.Context, accessKey string) (*model.Credential, error) {
 	if accessKey != m.AccessKeyID {
-		logging.Default().Fatal("access key in recording different than configuration")
+		logging.ContextUnavailable().Fatal("access key in recording different than configuration")
 	}
 	aCred := new(model.Credential)
 	aCred.AccessKeyID = accessKey

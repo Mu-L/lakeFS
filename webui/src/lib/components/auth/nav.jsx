@@ -6,7 +6,10 @@ import {BreadcrumbItem} from "react-bootstrap";
 import {useLoginConfigContext} from "../../hooks/conf";
 
 import {Link, NavItem} from "../nav";
+import {useAPI} from "../../hooks/api";
+import {auth} from "../../api";
 
+const truncatedHeaderClass = "d-inline-block w-50 text-nowrap overflow-hidden text-truncate align-middle";
 
 export const UserNav = ({ userId, page = 'groups' }) => {
     const {RBAC: rbac} = useLoginConfigContext();
@@ -39,20 +42,41 @@ export const UserNav = ({ userId, page = 'groups' }) => {
 
 export const GroupNav = ({ groupId, page = 'groups' }) => {
     const {RBAC: rbac} = useLoginConfigContext();
+
+    const {response, loading, error} = useAPI(() => {
+        return auth.getGroup(groupId);
+    }, [groupId]);
+
+    const group = response;
+
+    function getDescription() {
+        if (loading) return <span>...</span>;
+        if (error) return <span className="text-danger">{error.message}</span>;
+        return group && group.description;
+    }
+
     return (
         <>
             {rbac === 'simplified' ?
-            <Link component={NavItem} active={page === 'members'} href={{pathname: '/auth/groups/:groupId/members', params: {groupId}}}>
-                Group Memberships
-            </Link> :
-        <Nav justify variant="tabs">
-            <Link component={NavItem} active={page === 'members'} href={{pathname: '/auth/groups/:groupId/members', params: {groupId}}}>
-                Group Memberships
-            </Link>
-             <Link component={NavItem} active={page === 'policies'} href={{pathname: '/auth/groups/:groupId/policies', params: {groupId}}}>
-                Attached Policies
-            </Link>
-        </Nav>}
+                <Link component={NavItem} active={page === 'members'}
+                      href={{pathname: '/auth/groups/:groupId/members', params: {groupId}}}>
+                    Group Memberships
+                </Link>
+                :
+                <div>
+                    <h6 className="mb-4">Group description: {getDescription()}</h6>
+                    <Nav justify variant="tabs">
+                        <Link component={NavItem} active={page === 'members'}
+                              href={{pathname: '/auth/groups/:groupId/members', params: {groupId}}}>
+                            Group Memberships
+                        </Link>
+                        <Link component={NavItem} active={page === 'policies'}
+                              href={{pathname: '/auth/groups/:groupId/policies', params: {groupId}}}>
+                            Attached Policies
+                        </Link>
+                    </Nav>
+                </div>
+            }
         </>
     );
 };
@@ -64,7 +88,12 @@ export const UserHeader = ({ userEmail, userId, page }) => {
                 <Link component={BreadcrumbItem} href='/auth/users'>
                     Users
                 </Link>
-                <Link component={BreadcrumbItem} href={{pathname: '/auth/users/:userId', params: {userId}}}>
+                <Link
+                    component={BreadcrumbItem}
+                    href={{pathname: '/auth/users/:userId', params: {userId}}}
+                    className={truncatedHeaderClass}
+                    title={userEmail}
+                >
                     {userEmail}
                 </Link>
             </Breadcrumb>
@@ -81,7 +110,12 @@ export const GroupHeader = ({ groupId, page }) => {
                 <Link component={BreadcrumbItem} href='/auth/groups'>
                     Groups
                 </Link>
-                <Link component={BreadcrumbItem} href={{pathname: '/auth/groups/:groupId', params: {groupId}}}>
+                <Link
+                    component={BreadcrumbItem}
+                    href={{pathname: '/auth/groups/:groupId', params: {groupId}}}
+                    className={truncatedHeaderClass}
+                    title={groupId}
+                >
                     {groupId}
                 </Link>
             </Breadcrumb>
@@ -98,7 +132,12 @@ export const PolicyHeader = ({ policyId }) => {
                 <Link component={BreadcrumbItem} href='/auth/policies'>
                     Policies
                 </Link>
-                <Link component={BreadcrumbItem} href={{pathname: '/auth/policies/:policyId', params: {policyId}}}>
+                <Link
+                    component={BreadcrumbItem}
+                    href={{pathname: '/auth/policies/:policyId', params: {policyId}}}
+                    className={truncatedHeaderClass}
+                    title={policyId}
+                >
                     {policyId}
                 </Link>
             </Breadcrumb>

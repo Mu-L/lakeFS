@@ -3,8 +3,8 @@ package pyramid
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"io"
-	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/treeverse/lakefs/pkg/block/mem"
+	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/logging"
 	"github.com/treeverse/lakefs/pkg/pyramid/params"
 )
@@ -24,6 +25,7 @@ import (
 const (
 	blockStoragePrefix = "prefix"
 	allocatedDiskBytes = 4 * 1024 * 1024
+	secondaryStorageID = "another_one"
 )
 
 func TestSimpleWriteRead(t *testing.T) {
@@ -32,15 +34,17 @@ func TestSimpleWriteRead(t *testing.T) {
 	filename := "1/2/file1.txt"
 
 	content := []byte("hello world!")
-	writeToFile(t, ctx, namespace, filename, content)
-	checkContent(t, ctx, namespace, filename, content)
+	writeToFile(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
+	err := checkContent(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
+	require.NoError(t, err)
+
 }
 
 func TestReadFailDuringWrite(t *testing.T) {
 	ctx := context.Background()
 	namespace := uniqueNamespace()
 	filename := "file1"
-	f, err := fs.Create(ctx, namespace)
+	f, err := fs.Create(ctx, "", namespace)
 	require.NoError(t, err)
 
 	content := []byte("some content")
@@ -48,12 +52,45 @@ func TestReadFailDuringWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(content), n)
 
-	readF, err := fs.Open(ctx, namespace, filename)
+	readF, err := fs.Open(ctx, "", namespace, filename)
 	require.Nil(t, readF)
 	require.Error(t, err)
 	require.NoError(t, f.Close())
 	require.NoError(t, f.Store(ctx, filename))
-	checkContent(t, ctx, namespace, filename, content)
+	err = checkContent(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
+	require.NoError(t, err)
+}
+
+func TestOneWriteTwoStorageIDs(t *testing.T) {
+	ctx := context.Background()
+	namespace := uniqueNamespace()
+	filename := "1/2/file1.txt"
+	content := []byte("hello world!")
+
+	// Write content to default SID
+	writeToFile(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
+
+	// Read it from a different SID: should fail!
+	_, err := fs.Open(ctx, secondaryStorageID, namespace, filename)
+	require.ErrorContains(t, err, "not found")
+}
+
+func TestTwoWritesTwoStorageIDs(t *testing.T) {
+	ctx := context.Background()
+	namespace := uniqueNamespace()
+	filename := "1/2/file1.txt"
+	content1 := []byte("hello world!")
+	content2 := []byte("goodbye world!")
+
+	// Write content to two
+	writeToFile(t, ctx, config.SingleBlockstoreID, namespace, filename, content1)
+	writeToFile(t, ctx, secondaryStorageID, namespace, filename, content2)
+
+	// Check that both writes succeed
+	err := checkContent(t, ctx, config.SingleBlockstoreID, namespace, filename, content1)
+	require.NoError(t, err)
+	err = checkContent(t, ctx, secondaryStorageID, namespace, filename, content2)
+	require.NoError(t, err)
 }
 
 func TestEvictionSingleNamespace(t *testing.T) {
@@ -108,8 +145,8 @@ func TestStartup(t *testing.T) {
 		FSName:              fsName,
 		DiskAllocProportion: 1.0,
 		SharedParams: params.SharedParams{
-			Logger:             logging.Default(),
-			Adapter:            mem.New(),
+			Logger:             logging.ContextUnavailable(),
+			Adapter:            mem.New(context.Background()),
 			BlockStoragePrefix: blockStoragePrefix,
 			Local: params.LocalDiskParams{
 				BaseDir:             os.TempDir(),
@@ -127,7 +164,7 @@ func TestStartup(t *testing.T) {
 	// package os this does not matter.
 	assert.Error(t, err, os.ErrNotExist, "expected %s not to exist", workspacePath)
 
-	f, err := localFS.Open(ctx, "mem://"+namespaceID, filename)
+	f, err := localFS.Open(ctx, "", "mem://"+namespaceID, filename)
 	defer func() { _ = f.Close() }()
 	assert.NoError(t, err)
 
@@ -145,15 +182,18 @@ func testEviction(t *testing.T, namespaces ...string) {
 	content := make([]byte, fileBytes)
 	for i := 0; i < numFiles; i++ {
 		filename := "file_" + strconv.Itoa(i)
-		rand.Read(content)
-		writeToFile(t, ctx, namespaces[i%len(namespaces)], filename, content)
+		_, err := rand.Read(content)
+		if err != nil {
+			t.Fatal("rand.Read", err)
+		}
+		writeToFile(t, ctx, config.SingleBlockstoreID, namespaces[i%len(namespaces)], filename, content)
 	}
 
 	// read
 	for i := 0; i < numFiles; i++ {
 		filename := "file_" + strconv.Itoa(i)
 
-		f, err := fs.Open(ctx, namespaces[i%len(namespaces)], filename)
+		f, err := fs.Open(ctx, "", namespaces[i%len(namespaces)], filename)
 		require.NoError(t, err)
 
 		_, err = io.ReadAll(f)
@@ -169,11 +209,11 @@ func TestMultipleConcurrentReads(t *testing.T) {
 
 	defer func() { _ = os.RemoveAll(baseDir) }()
 
-	// write a single file to lookup later
+	// write a single file to look up later
 	namespace := uniqueNamespace()
 	filename := "1/2/file1.txt"
 	content := []byte("hello world!")
-	writeToFile(t, ctx, namespace, filename, content)
+	writeToFile(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
 
 	// remove the file
 	err := filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
@@ -183,7 +223,7 @@ func TestMultipleConcurrentReads(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	// try to read that file - only a single access to block storage is expected
+	// try to read that file - only single access to block storage is expected
 	const concurrencyLevel = 50
 	adapter.wait = make(chan struct{})
 	var wg sync.WaitGroup
@@ -191,7 +231,7 @@ func TestMultipleConcurrentReads(t *testing.T) {
 	for i := 0; i < concurrencyLevel; i++ {
 		go func() {
 			defer wg.Done()
-			checkContent(t, ctx, namespace, filename, content)
+			_ = checkContent(t, ctx, config.SingleBlockstoreID, namespace, filename, content)
 		}()
 	}
 
@@ -201,9 +241,9 @@ func TestMultipleConcurrentReads(t *testing.T) {
 	require.Equal(t, int64(1), adapter.GetCount())
 }
 
-func writeToFile(t *testing.T, ctx context.Context, namespace, filename string, content []byte) {
+func writeToFile(t *testing.T, ctx context.Context, storageID, namespace, filename string, content []byte) {
 	t.Helper()
-	f, err := fs.Create(ctx, namespace)
+	f, err := fs.Create(ctx, storageID, namespace)
 	require.NoError(t, err)
 
 	n, err := f.Write(content)
@@ -214,23 +254,25 @@ func writeToFile(t *testing.T, ctx context.Context, namespace, filename string, 
 	require.NoError(t, f.Store(ctx, filename))
 }
 
-func checkContent(t *testing.T, ctx context.Context, namespace string, filename string, content []byte) {
+func checkContent(t *testing.T, ctx context.Context, storageID, namespace string, filename string, content []byte) error {
 	t.Helper()
-	f, err := fs.Open(ctx, namespace, filename)
+	f, err := fs.Open(ctx, storageID, namespace, filename)
 	if err != nil {
 		t.Errorf("Failed to open namespace:%s filename:%s - %s", namespace, filename, err)
-		return
+		return err
 	}
 	defer func() { _ = f.Close() }()
 
 	data, err := io.ReadAll(f)
 	if err != nil {
 		t.Errorf("Failed to read all namespace:%s filename:%s - %s", namespace, filename, err)
-		return
+		return err
 	}
 	if !bytes.Equal(content, data) {
 		t.Errorf("Content mismatch reading namespace:%s filename:%s", namespace, filename)
+		return err
 	}
+	return nil
 }
 
 type mockEv struct{}

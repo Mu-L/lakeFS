@@ -11,11 +11,11 @@ import { ObjectRenderer } from "./fileRenderers";
 import { AlertError } from "../../../lib/components/controls";
 import { URINavigator } from "../../../lib/components/repository/tree";
 import { RefTypeBranch } from "../../../constants";
-import { RepositoryPageLayout } from "../../../lib/components/repository/layout";
-import { RefContextProvider } from "../../../lib/hooks/repo";
+import { RefContextProvider, useRefs } from "../../../lib/hooks/repo";
+import { useStorageConfigs } from "../../../lib/hooks/storageConfig";
 import { linkToPath } from "../../../lib/api";
+import { getRepoStorageConfig } from "./utils";
 
-import "../../../styles/ipynb.css";
 import "../../../styles/quickstart.css";
 
 type ObjectViewerPathParams = {
@@ -57,13 +57,19 @@ export const getContentType = (headers: Headers): string | null => {
 };
 
 const FileObjectsViewerPage = () => {
+  const {repo} = useRefs();
+  const {configs: storageConfigs, error: configsError, loading: storageConfigsLoading} = useStorageConfigs();
+  const {storageConfig, error: storageConfigError} = getRepoStorageConfig(storageConfigs, repo);
+
   const { repoId } = useParams<ObjectViewerPathParams>();
   const queryString = useQuery<ObjectViewerQueryString>();
   const refId = queryString["ref"] ?? "";
   const path = queryString["path"] ?? "";
-  const { response, error, loading } = useAPI(() => {
+  const { response, error: apiError, loading: apiLoading } = useAPI(() => {
     return objects.head(repoId, refId, path);
   }, [repoId, refId, path]);
+  const loading = apiLoading || storageConfigsLoading;
+  const error = loading ? null : apiError || configsError || storageConfigError;
 
   let content;
   if (loading) {
@@ -92,15 +98,14 @@ const FileObjectsViewerPage = () => {
         sizeBytes={sizeBytes}
         error={error}
         loading={loading}
+        presign={storageConfig.pre_sign_support_ui}
       />
     );
   }
 
   return (
     <RefContextProvider>
-      <RepositoryPageLayout activePage={"objects"}>
         {content}
-      </RepositoryPageLayout>
     </RefContextProvider>
   );
 };

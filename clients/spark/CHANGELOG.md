@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.14.1 - 2024-07-04
+* When scanning across all commits, correctly handle lakeFS storage namespaces that do not end in `/` (#7955)
+  
+## v0.14.0 - 2024-06-20
+* Expose user metadata for commit (#7886)
+
+## v0.13.0 - 2024-01-21
+* Shade scalapb for use in current DataBricks LTS releases (#7289). :bricks:
+
+This is a minor release: while it adds no new functionality, it changes how
+users can use the Spark metadata client with DataBricks (and possibly other
+managed Spark providers).
+
+## v0.12.0 - 2023-12-21
+* Metaclient: Skip dummy file when scanning metadata prefix (#7192)
+
+## v0.11.0 - 2023-10-23
+* Bump lakeFS SDK to v1.0
+* **Breaking:** drop support for lakeFS server < v0.108.0
+
+## v0.10.0 - 2023-08-15
+* Bug fixes and improvements.
+* Seperated flows of committs and uncommitted GC are no longer supported. Use the [new GC job](https://docs.lakefs.io/howto/garbage-collection/).
+
+## v0.9.1 - 2023-07-31
+* Fix bug when GC runs into the initial commit repository.
+* Fix bug when GC runs on a bucket outside the provided region. (#6283)
+
+## v0.9.0 - 2023-07-23
+* A new an improved Garbage Collection job. See the [docs](https://docs.lakefs.io/howto/garbage-collection.html) for more information.
+
 ## v0.8.1 - 2023-05-22
 
 Bug fixes:

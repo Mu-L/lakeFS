@@ -1,6 +1,5 @@
-import React, {useState} from "react";
-
-import {AuthLayout} from "../../../../lib/components/auth/layout";
+import React, {useEffect, useState} from "react";
+import { useOutletContext } from "react-router-dom";
 import {UserHeaderWithContext} from "./userHeaderWithContext";
 import {auth} from "../../../../lib/api";
 import {CredentialsShowModal, CredentialsTable} from "../../../../lib/components/auth/credentials";
@@ -13,6 +12,8 @@ import {
     RefreshButton
 } from "../../../../lib/components/controls";
 import {useRouter} from "../../../../lib/hooks/router";
+
+const EMAIL_TRUNCATION_THRESHOLD_LENGTH = 40;
 
 
 const UserCredentialsList = ({ userId, after, onPaginate }) => {
@@ -44,7 +45,24 @@ const UserCredentialsList = ({ userId, after, onPaginate }) => {
             </>
         );
 
-        const getMsg = (email) => <span>Create new credentials for user <strong>{email}</strong>?</span>;
+    const getMsg = (email) => (
+        <span>
+                Create new credentials for user{" "}
+            <br/>
+            <strong
+                className={`d-inline-block
+                            text-nowrap
+                            overflow-hidden
+                            text-truncate
+                            align-bottom
+                            ${email.length > EMAIL_TRUNCATION_THRESHOLD_LENGTH ? "w-75" : ""}`}
+                title={email}
+            >
+                {email}
+            </strong>
+            ?
+        </span>
+    );
     return (
         <>
             <UserHeaderWithContext userId={userId} page={'credentials'}/>
@@ -95,11 +113,9 @@ const UserCredentialsContainer = () => {
 };
 
 const UserCredentialsPage = () => {
-    return (
-        <AuthLayout activeTab="users">
-            <UserCredentialsContainer/>
-        </AuthLayout>
-    );
+    const {setActiveTab} = useOutletContext();
+    useEffect(() => setActiveTab("users"), [setActiveTab]);
+    return <UserCredentialsContainer/>;
 };
 
 export default UserCredentialsPage;

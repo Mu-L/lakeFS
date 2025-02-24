@@ -1,21 +1,23 @@
 ---
-layout: default
 title: Amazon Athena
 description: This section shows how you can start querying data from lakeFS using Amazon Athena.
 parent: Integrations
-nav_order: 80
-has_children: false
 redirect_from: /using/athena.html
 ---
 
 # Using lakeFS with Amazon Athena
+
+{: .warning }
+**Deprecated Feature:** Having heard the feedback from the community, we are planning to replace the below manual steps with an automated process.
+You can read more about it [here](https://github.com/treeverse/lakeFS/issues/6461).
+
 [Amazon Athena](https://aws.amazon.com/athena/) is an interactive query service that makes it easy to analyze data in Amazon S3 using standard SQL.
 {:.pb-5 }
 
 Amazon Athena works directly above S3 and can't access lakeFS. Tables created using Athena aren't readable by lakeFS.
 However, tables stored in lakeFS (that were created with [glue/hive](glue_hive_metastore.md)) can be queried by Athena.
 
-To support querying data from lakeFS with Amazon Athena, we will use `create-symlink`, one of the [metastore commands](glue_hive_metastore.md) in [lakectl](../reference/cli.html).
+To support querying data from lakeFS with Amazon Athena, we will use `create-symlink`, one of the [metastore commands](glue_hive_metastore.md) in [lakectl]({% link reference/cli.md %}).
 `create-symlink` receives a source table, destination table, and the table location. It performs two actions:
 1. It creates partitioned directories with symlink files in the underlying S3 bucket.
 1. It creates a table in Glue catalog with symlink format type and location pointing to the created symlinks.
@@ -44,20 +46,20 @@ WITH (format = 'PARQUET', external_location 's3a://example/main/my_table' );
 The repository `example` has the S3 storage space `s3://my-bucket/my-repo-prefix/`. 
 After inserting some data into it, the object structure under `lakefs://example/main/my_table` looks as follows:
 
-![lakefs_table.png](../assets/img/lakefs_table.png)
+![lakefs_table.png]({{ site.baseurl }}/assets/img/lakefs_table.png)
 
 To query that table with Athena, you need to use the `create-symlink` command as follows:
 
 ```shell
 lakectl metastore create-symlink \
---repo example \
---branch main \
---path my_table \
---from-client-type hive \
---from-schema default \
---from-table my_table \
---to-schema default \ 
---to-table my_table  
+  --repo example \
+  --branch main \
+  --path my_table \
+  --from-client-type hive \
+  --from-schema default \
+  --from-table my_table \
+  --to-schema default \ 
+  --to-table my_table  
 ```
 
 The command will generate two notable outputs:
@@ -65,13 +67,14 @@ The command will generate two notable outputs:
 1. For each partition, the command will create a symlink file:
 
 ```shell
-➜   aws s3 ls s3://my-bucket/my-repo-prefix/my_table/ --recursive
+aws s3 ls s3://my-bucket/my-repo-prefix/my_table/ --recursive
 2021-11-23 17:46:29          0 my-repo-prefix/my_table/symlinks/example/main/my_table/year=2021/month=11/symlink.txt
 2021-11-23 17:46:29         60 my-repo-prefix/my_table/symlinks/example/main/my_table/year=2021/month=12/symlink.txt
 2021-11-23 17:46:30         60 my-repo-prefix/my_table/symlinks/example/main/my_table/year=2022/month=1/symlink.txt
 ```
 
 An example content of a symlink file, where each line represents a single object of the specific partition:
+
 ```text
 s3://my-bucket/my-repo-prefix/5bdc62da516944b49889770d98274227
 s3://my-bucket/my-repo-prefix/64262fbf3d6347a79ead641d2b2baee6

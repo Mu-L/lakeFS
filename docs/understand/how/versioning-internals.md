@@ -1,20 +1,17 @@
 ---
-layout: default
 title: Versioning Internals
-parent: How it Works
+parent: How lakeFS Works
 grand_parent: Understanding lakeFS
 description: This section explains how versioning works in lakeFS.
-nav_order: 10
-has_children: false
 redirect_from: 
   - /understand/architecture/data-model.html
   - /understand/understand/data-model.html
+  - /understand/data-model.html
   - /understand/versioning-internals.html
 --- 
 
 
 # Versioning Internals
-{: .no_toc }
 
 {% include toc.html %}
 
@@ -103,4 +100,4 @@ Both these types of metadata are not only mutable, but also require strong consi
 
 Luckily, this is also much smaller set of metadata compared to the committed metadata.
 
-References and uncommitted metadata are currently stored on a key-value store (See [supported databases](../../reference/configuration.md)) for consistency guarantees.
+References and uncommitted metadata are currently stored on a key-value store (See [supported databases]({% link reference/configuration.md %})) for consistency guarantees.

@@ -1,24 +1,23 @@
-import React, { FC } from "react";
+import React, { FC, useContext } from "react";
 import Alert from "react-bootstrap/Alert";
 import { humanSize } from "../../../../lib/components/repository/tree";
 import { useAPI } from "../../../../lib/hooks/api";
 import { objects, qs } from "../../../../lib/api";
 import { AlertError, Loading } from "../../../../lib/components/controls";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkHtml from "remark-html";
-import rehypeRaw from "rehype-raw";
 import SyntaxHighlighter from "react-syntax-highlighter";
 import { githubGist as syntaxHighlightStyle } from "react-syntax-highlighter/dist/esm/styles/hljs";
 import { IpynbRenderer as NbRenderer } from "react-ipynb-renderer";
 import { guessLanguage } from "./index";
-import { CustomMarkdownRenderer } from "./CustomMarkdownRenderer";
 import {
   RendererComponent,
   RendererComponentWithText,
   RendererComponentWithTextCallback,
 } from "./types";
-import imageUriReplacer from "../../../../lib/remark-plugins/imageUriReplacer";
+
+import "react-ipynb-renderer/dist/styles/default.css";
+import { useMarkdownProcessor } from "./useMarkdownProcessor";
+import { AppContext } from "../../../../lib/hooks/appContext";
+import { dark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 export const ObjectTooLarge: FC<RendererComponent> = ({ path, sizeBytes }) => {
   return (
@@ -73,26 +72,10 @@ export const MarkdownRenderer: FC<RendererComponentWithText> = ({
   text,
   repoId,
   refId,
+  path,
+  presign = false,
 }) => {
-  return (
-    <ReactMarkdown
-      components={CustomMarkdownRenderer}
-      remarkPlugins={[
-        [
-          imageUriReplacer,
-          {
-            repo: repoId,
-            ref: refId,
-          },
-        ],
-        remarkGfm,
-        remarkHtml,
-      ]}
-      rehypePlugins={[rehypeRaw]}
-    >
-      {text}
-    </ReactMarkdown>
-  );
+  return useMarkdownProcessor(text, repoId, refId, path, presign);
 };
 
 export const TextRenderer: FC<RendererComponentWithText> = ({
@@ -100,10 +83,12 @@ export const TextRenderer: FC<RendererComponentWithText> = ({
   fileExtension,
   text,
 }) => {
+  const {state} = useContext(AppContext);
   const language = guessLanguage(fileExtension, contentType) ?? "plaintext";
+
   return (
     <SyntaxHighlighter
-      style={syntaxHighlightStyle}
+      style={state.settings.darkMode ? dark : syntaxHighlightStyle}
       language={language}
       showInlineLineNumbers={true}
       showLineNumbers={true}

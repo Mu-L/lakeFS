@@ -2,29 +2,21 @@ package azure
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/service"
 	"github.com/treeverse/lakefs/pkg/block"
 )
 
+const DirectoryBlobMetadataKey = "hdi_isfolder"
+
 var ErrAzureInvalidURL = errors.New("invalid Azure storage URL")
-
-func NewAzureBlobWalker(svc *service.Client) (*BlobWalker, error) {
-	return &BlobWalker{
-		client: svc,
-		mark:   block.Mark{HasMore: true},
-	}, nil
-}
-
-type BlobWalker struct {
-	client *service.Client
-	mark   block.Mark
-}
 
 // extractAzurePrefix takes a URL that looks like this: https://storageaccount.blob.core.windows.net/container/prefix
 // and return the URL for the container and a prefix, if one exists
@@ -33,7 +25,7 @@ func extractAzurePrefix(storageURI *url.URL) (*url.URL, string, error) {
 	if len(path) == 0 {
 		return nil, "", fmt.Errorf("%w: could not parse container URL: %s", ErrAzureInvalidURL, storageURI)
 	}
-	parts := strings.SplitN(path, "/", 2) // nolint: gomnd
+	parts := strings.SplitN(path, "/", 2) // nolint: mnd
 	if len(parts) == 1 {
 		// we only have a container
 		return storageURI, "", nil
@@ -48,68 +40,34 @@ func getAzureBlobURL(containerURL *url.URL, blobName string) *url.URL {
 	return containerURL.ResolveReference(&relativePath)
 }
 
-func (a *BlobWalker) Walk(ctx context.Context, storageURI *url.URL, op block.WalkOptions, walkFn func(e block.ObjectStoreEntry) error) error {
-	// we use bucket as container and prefix as path
-	containerURL, prefix, err := extractAzurePrefix(storageURI)
-	if err != nil {
-		return err
+// isBlobItemFolder returns true if the blob item is a folder.
+// Make sure that metadata is populated before calling this function.
+// Example: for listing using blob API passing options with `Include: container.ListBlobsInclude{ Metadata: true }`
+// will populate the metadata.
+func isBlobItemFolder(blobItem *container.BlobItem) bool {
+	if blobItem.Metadata == nil {
+		return false
 	}
-	var basePath string
-	if idx := strings.LastIndex(prefix, "/"); idx != -1 {
-		basePath = prefix[:idx+1]
+	if blobItem.Properties.ContentLength != nil && *blobItem.Properties.ContentLength != 0 {
+		return false
 	}
-
-	qk, err := ResolveBlobURLInfoFromURL(containerURL)
-	if err != nil {
-		return err
+	isFolder, ok := blobItem.Metadata[DirectoryBlobMetadataKey]
+	if !ok || isFolder == nil {
+		return false
 	}
-
-	containerClient := a.client.NewContainerClient(qk.ContainerName)
-	listBlob := containerClient.NewListBlobsFlatPager(&azblob.ListBlobsFlatOptions{
-		Prefix: &prefix,
-		Marker: &op.ContinuationToken,
-	})
-
-	for listBlob.More() {
-		resp, err := listBlob.NextPage(ctx)
-		if err != nil {
-			return err
-		}
-		if resp.Marker != nil {
-			a.mark.ContinuationToken = *resp.Marker
-		}
-		for _, blobInfo := range resp.Segment.BlobItems {
-			// skipping everything in the page which is before 'After' (without forgetting the possible empty string key!)
-			if op.After != "" && *blobInfo.Name <= op.After {
-				continue
-			}
-			a.mark.LastKey = *blobInfo.Name
-			if err := walkFn(block.ObjectStoreEntry{
-				FullKey:     *blobInfo.Name,
-				RelativeKey: strings.TrimPrefix(*blobInfo.Name, basePath),
-				Address:     getAzureBlobURL(containerURL, *blobInfo.Name).String(),
-				ETag:        string(*blobInfo.Properties.ETag),
-				Mtime:       *blobInfo.Properties.LastModified,
-				Size:        *blobInfo.Properties.ContentLength,
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
-	a.mark = block.Mark{
-		HasMore: false,
-	}
-
-	return nil
+	return *isFolder == "true"
 }
 
-func (a *BlobWalker) Marker() block.Mark {
-	return a.mark
-}
-
-func (a *BlobWalker) GetSkippedEntries() []block.ObjectStoreEntry {
-	return nil
+// extractBlobItemEtag etag set by content md5 with fallback to use Etag value
+func extractBlobItemEtag(blobItem *container.BlobItem) string {
+	if blobItem.Properties.ContentMD5 != nil {
+		return hex.EncodeToString(blobItem.Properties.ContentMD5)
+	}
+	if blobItem.Properties.ETag != nil {
+		etag := string(*blobItem.Properties.ETag)
+		return strings.TrimFunc(etag, func(r rune) bool { return r == '"' || r == ' ' })
+	}
+	return ""
 }
 
 //
@@ -132,7 +90,7 @@ type DataLakeWalker struct {
 }
 
 func (a *DataLakeWalker) Walk(ctx context.Context, storageURI *url.URL, op block.WalkOptions, walkFn func(e block.ObjectStoreEntry) error) error {
-	// we use bucket as container and prefix as path
+	// we use bucket as container and prefix as a path
 	containerURL, prefix, err := extractAzurePrefix(storageURI)
 	if err != nil {
 		return err
@@ -151,6 +109,9 @@ func (a *DataLakeWalker) Walk(ctx context.Context, storageURI *url.URL, op block
 	listBlob := containerClient.NewListBlobsFlatPager(&azblob.ListBlobsFlatOptions{
 		Prefix: &prefix,
 		Marker: &op.ContinuationToken,
+		Include: container.ListBlobsInclude{
+			Metadata: true,
+		},
 	})
 
 	skipCount := 0
@@ -169,15 +130,16 @@ func (a *DataLakeWalker) Walk(ctx context.Context, storageURI *url.URL, op block
 				continue
 			}
 
-			if *blobInfo.Properties.ContentLength == 0 && blobInfo.Properties.ContentMD5 == nil {
-				// Skip folders
+			// Skip folders
+			if isBlobItemFolder(blobInfo) {
 				continue
 			}
+
 			entry := block.ObjectStoreEntry{
 				FullKey:     *blobInfo.Name,
 				RelativeKey: strings.TrimPrefix(*blobInfo.Name, basePath),
 				Address:     getAzureBlobURL(containerURL, *blobInfo.Name).String(),
-				ETag:        string(*blobInfo.Properties.ETag),
+				ETag:        extractBlobItemEtag(blobInfo),
 				Mtime:       *blobInfo.Properties.LastModified,
 				Size:        *blobInfo.Properties.ContentLength,
 			}

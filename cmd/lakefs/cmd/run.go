@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,21 +11,22 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-co-op/gocron"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	blockfactory "github.com/treeverse/lakefs/modules/block/factory"
 	"github.com/treeverse/lakefs/pkg/actions"
 	"github.com/treeverse/lakefs/pkg/api"
 	"github.com/treeverse/lakefs/pkg/auth"
 	"github.com/treeverse/lakefs/pkg/auth/crypt"
-	"github.com/treeverse/lakefs/pkg/auth/email"
 	authparams "github.com/treeverse/lakefs/pkg/auth/params"
 	authremote "github.com/treeverse/lakefs/pkg/auth/remoteauthenticator"
+	"github.com/treeverse/lakefs/pkg/authentication"
 	"github.com/treeverse/lakefs/pkg/block"
-	"github.com/treeverse/lakefs/pkg/block/factory"
 	"github.com/treeverse/lakefs/pkg/catalog"
 	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/gateway"
@@ -33,18 +35,16 @@ import (
 	"github.com/treeverse/lakefs/pkg/graveler/ref"
 	"github.com/treeverse/lakefs/pkg/httputil"
 	"github.com/treeverse/lakefs/pkg/kv"
+	_ "github.com/treeverse/lakefs/pkg/kv/cosmosdb"
 	_ "github.com/treeverse/lakefs/pkg/kv/dynamodb"
-	_ "github.com/treeverse/lakefs/pkg/kv/local"
-	_ "github.com/treeverse/lakefs/pkg/kv/mem"
-	"github.com/treeverse/lakefs/pkg/kv/params"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
+	"github.com/treeverse/lakefs/pkg/kv/local"
+	"github.com/treeverse/lakefs/pkg/kv/mem"
 	_ "github.com/treeverse/lakefs/pkg/kv/postgres"
 	"github.com/treeverse/lakefs/pkg/logging"
-	tablediff "github.com/treeverse/lakefs/pkg/plugins/diff"
 	"github.com/treeverse/lakefs/pkg/stats"
-	"github.com/treeverse/lakefs/pkg/templater"
 	"github.com/treeverse/lakefs/pkg/upload"
 	"github.com/treeverse/lakefs/pkg/version"
-	"github.com/treeverse/lakefs/templates"
 )
 
 const (
@@ -57,24 +57,91 @@ type Shutter interface {
 	Shutdown(context.Context) error
 }
 
-var errSimplifiedOrExternalAuth = errors.New(`cannot set auth.ui_config.rbac to non-simplified without setting an external auth service`)
+var (
+	errAuthNoEndpoint = errors.New("cannot set auth.ui_config.rbac to non-basic without setting an external auth service endpoint")
+	errInvalidAuth    = errors.New("invalid auth configuration")
+)
 
-func checkAuthModeSupport(cfg *config.Config) error {
-	if !cfg.IsAuthUISimplified() && !cfg.IsAuthTypeAPI() {
-		return errSimplifiedOrExternalAuth
+func checkAuthModeSupport(cfg *config.BaseConfig) error {
+	if cfg.IsAuthBasic() { // Basic mode
+		return nil
+	}
+	if !cfg.IsAuthUISimplified() && !cfg.IsAdvancedAuth() {
+		return fmt.Errorf("%s: %w", cfg.Auth.UIConfig.RBAC, errInvalidAuth)
+	}
+	if !cfg.IsAuthTypeAPI() {
+		return errAuthNoEndpoint
 	}
 	return nil
+}
+
+func NewAuthService(ctx context.Context, cfg *config.BaseConfig, logger logging.Logger, kvStore kv.Store, metadataManager *auth.KVMetadataManager) auth.Service {
+	if err := checkAuthModeSupport(cfg); err != nil {
+		logger.WithError(err).Fatal("Unsupported auth mode")
+	}
+
+	secretStore := crypt.NewSecretStore([]byte(cfg.Auth.Encrypt.SecretKey))
+	if cfg.IsAuthBasic() {
+		apiService := auth.NewBasicAuthService(
+			kvStore,
+			secretStore,
+			authparams.ServiceCache(cfg.Auth.Cache),
+			logger.WithField("service", "auth_service"),
+		)
+		// Check if migration needed
+		initialized, err := metadataManager.IsInitialized(ctx)
+		if err != nil {
+			logger.WithError(err).Fatal("failed to get lakeFS init status")
+		}
+		if initialized {
+			username, err := apiService.Migrate(ctx)
+			switch {
+			case errors.Is(err, auth.ErrMigrationNotPossible):
+				logger.WithError(err).Fatal(`
+cannot migrate existing user to basic auth mode!
+Please run "lakefs superuser -h" and follow the instructions on how to migrate an existing user
+`)
+			case err == nil:
+				if username != "" { // Print only in case of actual migration
+					logger.Infof("\nUser %s was migrated successfully!\n", username)
+				}
+			default:
+				logger.WithError(err).Fatal("basic auth migration failed")
+			}
+		}
+		return auth.NewMonitoredAuthService(apiService)
+	}
+
+	// Not Basic - using auth server
+	apiService, err := auth.NewAPIAuthService(
+		cfg.Auth.API.Endpoint,
+		cfg.Auth.API.Token.SecureValue(),
+		cfg.Auth.AuthenticationAPI.ExternalPrincipalsEnabled,
+		secretStore,
+		authparams.ServiceCache(cfg.Auth.Cache),
+		logger.WithField("service", "auth_api"),
+	)
+	if err != nil {
+		logger.WithError(err).Fatal("failed to create authentication service")
+	}
+	if !cfg.Auth.API.SkipHealthCheck {
+		if err := apiService.CheckHealth(ctx, logger, cfg.Auth.API.HealthCheckTimeout); err != nil {
+			logger.WithError(err).Fatal("Auth API health check failed")
+		}
+	}
+	return auth.NewMonitoredAuthServiceAndInviter(apiService)
 }
 
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run lakeFS",
 	Run: func(cmd *cobra.Command, args []string) {
-		logger := logging.Default()
+		logger := logging.ContextUnavailable()
 		cfg := loadConfig()
+		baseCfg := cfg.GetBaseConfig()
 		viper.WatchConfig()
 		viper.OnConfigChange(func(in fsnotify.Event) {
-			var c config.Config
+			var c config.BaseConfig
 			if err := config.Unmarshal(&c); err != nil {
 				logger.WithError(err).Error("Failed to unmarshal config while reload")
 				return
@@ -90,7 +157,7 @@ var runCmd = &cobra.Command{
 
 		logger.WithField("version", version.Version).Info("lakeFS run")
 
-		kvParams, err := cfg.DatabaseParams()
+		kvParams, err := kvparams.NewConfig(&baseCfg.Database)
 		if err != nil {
 			logger.WithError(err).Fatal("Get KV params")
 		}
@@ -105,66 +172,41 @@ var runCmd = &cobra.Command{
 			logger.WithError(err).Fatal("Failure on schema validation")
 		}
 
-		emailer, err := email.NewEmailer(email.Params(cfg.Email))
-		if err != nil {
-			logger.WithError(err).Fatal("Emailer has not been properly configured, check the values in sender field")
-		}
-
 		migrator := kv.NewDatabaseMigrator(kvParams)
 		multipartTracker := multipart.NewTracker(kvStore)
 		actionsStore := actions.NewActionsKVStore(kvStore)
-		authMetadataManager := auth.NewKVMetadataManager(version.Version, cfg.Installation.FixedID, cfg.Database.Type, kvStore)
+		authMetadataManager := auth.NewKVMetadataManager(version.Version, baseCfg.Installation.FixedID, baseCfg.Database.Type, kvStore)
 		idGen := &actions.DecreasingIDGenerator{}
 
-		// initialize auth service
-		var authService auth.Service
-
-		if err := checkAuthModeSupport(cfg); err != nil {
-			logger.WithError(err).Fatal("Unsupported auth mode")
-		}
-		if cfg.IsAuthTypeAPI() {
-			var apiEmailer *email.Emailer
-			if !cfg.Auth.API.SupportsInvites {
-				// invites not supported by API - delegate it to emailer
-				apiEmailer = emailer
-			}
-			authService, err = auth.NewAPIAuthService(
-				cfg.Auth.API.Endpoint,
-				cfg.Auth.API.Token.SecureValue(),
-				crypt.NewSecretStore(cfg.AuthEncryptionSecret()),
-				authparams.ServiceCache(cfg.Auth.Cache),
-				apiEmailer,
-				logger.WithField("service", "auth_api"),
-			)
+		authService := NewAuthService(ctx, baseCfg, logger, kvStore, authMetadataManager)
+		// initialize authentication service
+		var authenticationService authentication.Service
+		if baseCfg.IsAuthenticationTypeAPI() {
+			authenticationService, err = authentication.NewAPIService(baseCfg.Auth.AuthenticationAPI.Endpoint, baseCfg.Auth.CookieAuthVerification.ValidateIDTokenClaims, logger.WithField("service", "authentication_api"), baseCfg.Auth.AuthenticationAPI.ExternalPrincipalsEnabled)
 			if err != nil {
 				logger.WithError(err).Fatal("failed to create authentication service")
 			}
 		} else {
-			authService = auth.NewAuthService(
-				kvStore,
-				crypt.NewSecretStore(cfg.AuthEncryptionSecret()),
-				emailer,
-				authparams.ServiceCache(cfg.Auth.Cache),
-				logger.WithField("service", "auth_service"),
-			)
+			authenticationService = authentication.NewDummyService()
 		}
 
-		cloudMetadataProvider := stats.BuildMetadataProvider(logger, cfg)
-		blockstoreType := cfg.BlockstoreType()
+		cloudMetadataProvider := stats.BuildMetadataProvider(logger, baseCfg)
+		blockstoreType := baseCfg.Blockstore.Type
 		if blockstoreType == "mem" {
 			printLocalWarning(os.Stderr, fmt.Sprintf("blockstore type %s", blockstoreType))
 			logger.WithField("adapter_type", blockstoreType).Warn("Block adapter NOT SUPPORTED for production use")
 		}
 
 		metadata := stats.NewMetadata(ctx, logger, blockstoreType, authMetadataManager, cloudMetadataProvider)
-		bufferedCollector := stats.NewBufferedCollector(metadata.InstallationID, stats.Config(cfg.Stats),
+		bufferedCollector := stats.NewBufferedCollector(metadata.InstallationID, stats.Config(baseCfg.Stats),
 			stats.WithLogger(logger.WithField("service", "stats_collector")))
 
 		// init block store
-		blockStore, err := factory.BuildBlockAdapter(ctx, bufferedCollector, cfg)
+		blockStore, err := blockfactory.BuildBlockAdapter(ctx, bufferedCollector, cfg)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to create block adapter")
 		}
+
 		bufferedCollector.SetRuntimeCollector(blockStore.RuntimeStats)
 		// send metadata
 		bufferedCollector.CollectMetadata(metadata)
@@ -173,21 +215,40 @@ var runCmd = &cobra.Command{
 			Config:       cfg,
 			KVStore:      kvStore,
 			PathProvider: upload.DefaultPathProvider,
-			Limiter:      cfg.NewGravelerBackgroundLimiter(),
 		})
 		if err != nil {
 			logger.WithError(err).Fatal("failed to create catalog")
 		}
 		defer func() { _ = c.Close() }()
 
-		deleteScheduler := getScheduler()
+		// usage report setup - default usage reporter is a no-op
+		usageReporter := stats.DefaultUsageReporter
+		if baseCfg.UsageReport.Enabled {
+			ur := stats.NewUsageReporter(metadata.InstallationID, kvStore)
+			ur.Start(ctx, baseCfg.UsageReport.FlushInterval, logger.WithField("service", "usage_report"))
+			usageReporter = ur
+		}
+
+		deleteScheduler := gocron.NewScheduler(time.UTC)
 		err = scheduleCleanupJobs(ctx, deleteScheduler, c)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to schedule cleanup jobs")
 		}
 		deleteScheduler.StartAsync()
 
-		templater := templater.NewService(templates.Content, cfg, authService)
+		// initial setup - support only when a local database is configured.
+		// local database lock will make sure that only one instance will run the setup.
+		if (kvParams.Type == local.DriverName || kvParams.Type == mem.DriverName) &&
+			baseCfg.Installation.UserName != "" && baseCfg.Installation.AccessKeyID.SecureValue() != "" && baseCfg.Installation.SecretAccessKey.SecureValue() != "" {
+			setupCreds, err := setupLakeFS(ctx, baseCfg, authMetadataManager, authService, baseCfg.Installation.UserName,
+				baseCfg.Installation.AccessKeyID.SecureValue(), baseCfg.Installation.SecretAccessKey.SecureValue(), false)
+			if err != nil {
+				logger.WithError(err).WithField("admin", baseCfg.Installation.UserName).Fatal("Failed to initial setup environment")
+			}
+			if setupCreds != nil {
+				logger.WithField("admin", baseCfg.Installation.UserName).Info("Initial setup completed successfully")
+			}
+		}
 
 		actionsService := actions.NewService(
 			ctx,
@@ -196,7 +257,8 @@ var runCmd = &cobra.Command{
 			catalog.NewActionsOutputWriter(c.BlockAdapter),
 			idGen,
 			bufferedCollector,
-			actions.Config(cfg.Actions),
+			actions.Config(baseCfg.Actions),
+			baseCfg.ListenAddress,
 		)
 
 		// wire actions into entry catalog
@@ -208,18 +270,19 @@ var runCmd = &cobra.Command{
 		}
 
 		// remote authenticator setup
-		if cfg.Auth.RemoteAuthenticator.Enabled {
-			remoteAuthenticator, err := authremote.NewAuthenticator(authremote.AuthenticatorConfig(cfg.Auth.RemoteAuthenticator), authService, logger)
+		if baseCfg.Auth.RemoteAuthenticator.Enabled {
+			remoteAuthenticator, err := authremote.NewAuthenticator(authremote.AuthenticatorConfig(baseCfg.Auth.RemoteAuthenticator), authService, logger)
 			if err != nil {
 				logger.WithError(err).Fatal("failed to create remote authenticator")
 			}
+
 			middlewareAuthenticator = append(middlewareAuthenticator, remoteAuthenticator)
 		}
 
-		auditChecker := version.NewDefaultAuditChecker(cfg.Security.AuditCheckURL, metadata.InstallationID, version.NewDefaultVersionSource(cfg.Security.CheckLatestVersionCache))
+		auditChecker := version.NewDefaultAuditChecker(baseCfg.Security.AuditCheckURL, metadata.InstallationID, version.NewDefaultVersionSource(baseCfg.Security.CheckLatestVersionCache))
 		defer auditChecker.Close()
 		if !version.IsVersionUnreleased() {
-			auditChecker.StartPeriodicCheck(ctx, cfg.Security.AuditCheckInterval, logger)
+			auditChecker.StartPeriodicCheck(ctx, baseCfg.Security.AuditCheckInterval, logger)
 		}
 
 		allowForeign, err := cmd.Flags().GetBool(mismatchedReposFlagName)
@@ -227,14 +290,11 @@ var runCmd = &cobra.Command{
 			logger.WithError(err).Fatal(mismatchedReposFlagName)
 		}
 		if !allowForeign {
-			checkRepos(ctx, logger, authMetadataManager, blockStore, c)
+			checkRepos(ctx, logger, cfg, authMetadataManager, blockStore, c)
 		}
 
 		// update health info with installation ID
 		httputil.SetHealthHandlerInfo(metadata.InstallationID)
-
-		otfDiffService, closeOtfService := tablediff.NewService(cfg.Diff, cfg.Plugins)
-		defer closeOtfService()
 
 		// start API server
 		apiHandler := api.Serve(
@@ -242,6 +302,7 @@ var runCmd = &cobra.Command{
 			c,
 			middlewareAuthenticator,
 			authService,
+			authenticationService,
 			blockStore,
 			authMetadataManager,
 			migrator,
@@ -250,58 +311,65 @@ var runCmd = &cobra.Command{
 			actionsService,
 			auditChecker,
 			logger.WithField("service", "api_gateway"),
-			emailer,
-			templater,
-			cfg.Gateways.S3.DomainNames,
-			cfg.UISnippets(),
+			baseCfg.Gateways.S3.DomainNames,
+			baseCfg.UISnippets(),
 			upload.DefaultPathProvider,
-			otfDiffService,
+			usageReporter,
 		)
 
 		// init gateway server
 		var s3FallbackURL *url.URL
-		if cfg.Gateways.S3.FallbackURL != "" {
-			s3FallbackURL, err = url.Parse(cfg.Gateways.S3.FallbackURL)
+		if baseCfg.Gateways.S3.FallbackURL != "" {
+			s3FallbackURL, err = url.Parse(baseCfg.Gateways.S3.FallbackURL)
 			if err != nil {
 				logger.WithError(err).Fatal("Failed to parse s3 fallback URL")
 			}
 		}
 
-		lakefsBaseURL := cfg.Email.LakefsBaseURL
-		if lakefsBaseURL != "" {
-			_, err := url.Parse(lakefsBaseURL)
-			if err != nil {
-				logger.WithError(err).Warn("Failed to parse configured lakefs base url for email")
-			}
+		// setup authenticator for s3 gateway to also support swagger auth
+		oidcConfig := api.OIDCConfig(baseCfg.Auth.OIDC)
+		cookieAuthConfig := api.CookieAuthConfig(baseCfg.Auth.CookieAuthVerification)
+		apiAuthenticator, err := api.GenericAuthMiddleware(
+			logger.WithField("service", "s3_gateway"),
+			middlewareAuthenticator,
+			authService,
+			&oidcConfig,
+			&cookieAuthConfig,
+		)
+		if err != nil {
+			logger.WithError(err).Fatal("could not initialize authenticator for S3 gateway")
 		}
 
 		s3gatewayHandler := gateway.NewHandler(
-			cfg.Gateways.S3.Region,
+			baseCfg.Gateways.S3.Region,
 			c,
 			multipartTracker,
 			blockStore,
 			authService,
-			cfg.Gateways.S3.DomainNames,
+			baseCfg.Gateways.S3.DomainNames,
 			bufferedCollector,
 			upload.DefaultPathProvider,
 			s3FallbackURL,
-			cfg.Logging.AuditLogLevel,
-			cfg.Logging.TraceRequestHeaders,
+			baseCfg.Logging.AuditLogLevel,
+			baseCfg.Logging.TraceRequestHeaders,
+			baseCfg.Gateways.S3.VerifyUnsupported,
+			baseCfg.IsAdvancedAuth(),
 		)
+		s3gatewayHandler = apiAuthenticator(s3gatewayHandler)
 
 		bufferedCollector.Start(ctx)
 		defer bufferedCollector.Close()
 
 		bufferedCollector.CollectEvent(stats.Event{Class: "global", Name: "run"})
 
-		logger.WithField("listen_address", cfg.ListenAddress).Info("starting HTTP server")
+		logger.WithField("listen_address", baseCfg.ListenAddress).Info("starting HTTP server")
 		server := &http.Server{
-			Addr:              cfg.ListenAddress,
+			Addr:              baseCfg.ListenAddress,
 			ReadHeaderTimeout: time.Minute,
 			Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				// If the request has the S3 GW domain (exact or subdomain) - or carries an AWS sig, serve S3GW
-				if httputil.HostMatches(request, cfg.Gateways.S3.DomainNames) ||
-					httputil.HostSubdomainOf(request, cfg.Gateways.S3.DomainNames) ||
+				if httputil.HostMatches(request, baseCfg.Gateways.S3.DomainNames) ||
+					httputil.HostSubdomainOf(request, baseCfg.Gateways.S3.DomainNames) ||
 					sig.IsAWSSignedRequest(request) {
 					s3gatewayHandler.ServeHTTP(writer, request)
 					return
@@ -316,23 +384,44 @@ var runCmd = &cobra.Command{
 
 		go func() {
 			var err error
-			if cfg.TLS.Enabled {
-				err = server.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+			if baseCfg.TLS.Enabled {
+				err = server.ListenAndServeTLS(baseCfg.TLS.CertFile, baseCfg.TLS.KeyFile)
 			} else {
 				err = server.ListenAndServe()
 			}
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				_, _ = fmt.Fprintf(os.Stderr, "Failed to listen on %s: %v\n", cfg.ListenAddress, err)
+				_, _ = fmt.Fprintf(os.Stderr, "Failed to listen on %s: %v\n", baseCfg.ListenAddress, err)
 				os.Exit(1)
 			}
 		}()
 
+		isQuickstart, err := cmd.Flags().GetBool(config.QuickstartConfiguration)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Failed to get command flag %s: %v\n", config.QuickstartConfiguration, err)
+			os.Exit(1)
+		}
+
+		data := bannerData{
+			SetupMessage: localBanner,
+			Version:      version.Version,
+		}
+		if isQuickstart {
+			data.SetupMessage = quickStartBanner
+		}
+
+		var buf bytes.Buffer
+		err = bannerTemplate.Execute(&buf, data)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Failed formatting banner: %v\n", err)
+			os.Exit(1)
+		}
+		printWelcome(os.Stderr, buf.String())
 		gracefulShutdown(ctx, server)
 	},
 }
 
-// checkRepos iterates on all repos and validates that their settings are correct.
-func checkRepos(ctx context.Context, logger logging.Logger, authMetadataManager auth.MetadataManager, blockStore block.Adapter, c *catalog.Catalog) {
+// checkRepos iterating on all repos and validates that their settings are correct.
+func checkRepos(ctx context.Context, logger logging.Logger, config config.Config, authMetadataManager auth.MetadataManager, blockStore block.Adapter, c *catalog.Catalog) {
 	initialized, err := authMetadataManager.IsInitialized(ctx)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to check if lakeFS is initialized")
@@ -349,13 +438,18 @@ func checkRepos(ctx context.Context, logger logging.Logger, authMetadataManager 
 		for hasMore {
 			var err error
 			var repos []*catalog.Repository
-			repos, hasMore, err = c.ListRepositories(ctx, -1, "", next)
+			repos, hasMore, err = c.ListRepositories(ctx, -1, "", "", next)
 			if err != nil {
 				logger.WithError(err).Fatal("Checking existing repositories failed")
 			}
 
-			adapterStorageType := blockStore.BlockstoreType()
 			for _, repo := range repos {
+				adapterConfig := config.StorageConfig().GetStorageByID(repo.StorageID)
+				if adapterConfig == nil {
+					logger.Fatalf("No storage configuration found for repository '%s', StorageID='%s'", repo.Name, repo.StorageID)
+					continue
+				}
+				adapterStorageType := adapterConfig.BlockstoreType()
 				nsURL, err := url.Parse(repo.StorageNamespace)
 				if err != nil {
 					logger.WithError(err).Fatalf("Failed to parse repository %s namespace '%s'", repo.Name, repo.StorageNamespace)
@@ -366,8 +460,6 @@ func checkRepos(ctx context.Context, logger logging.Logger, authMetadataManager 
 				}
 
 				checkForeignRepo(repoStorageType, logger, adapterStorageType, repo.Name)
-				checkMetadataPrefix(ctx, repo, logger, blockStore, repoStorageType)
-
 				next = repo.Name
 			}
 		}
@@ -375,57 +467,40 @@ func checkRepos(ctx context.Context, logger logging.Logger, authMetadataManager 
 }
 
 func scheduleCleanupJobs(ctx context.Context, s *gocron.Scheduler, c *catalog.Catalog) error {
-	// delete expired link addresses
-	const deleteExpiredAddressPeriod = 3
-	job1, err := s.Every(deleteExpiredAddressPeriod * ref.LinkAddressTime).Do(func() {
-		c.DeleteExpiredLinkAddresses(ctx)
-	})
-	if err != nil {
-		return err
-	}
-	job1.SingletonMode()
+	const deleteExpiredTaskInterval = 24 * time.Hour
 
-	// delete expired imports
-	job2, err := s.Every(ref.ImportExpiryTime).Do(func() {
-		c.DeleteExpiredImports(ctx)
-	})
-	if err != nil {
-		return err
+	jobData := []struct {
+		name     string
+		interval time.Duration
+		fn       func(context.Context)
+	}{
+		{
+			name:     "delete expired imports",
+			interval: ref.ImportExpiryTime,
+			fn:       c.DeleteExpiredImports,
+		},
+		{
+			name:     "delete expired tasks",
+			interval: deleteExpiredTaskInterval,
+			fn:       c.DeleteExpiredTasks,
+		},
 	}
-	job2.SingletonMode()
 
+	for _, jd := range jobData {
+		job, err := s.Every(jd.interval).Do(jd.fn, ctx)
+		if err != nil {
+			return fmt.Errorf("schedule %s failed: %w", jd.name, err)
+		}
+		job.SingletonMode()
+	}
 	return nil
-}
-
-func getScheduler() *gocron.Scheduler {
-	return gocron.NewScheduler(time.UTC)
-}
-
-// checkMetadataPrefix checks for non-migrated repos of issue #2397 (https://github.com/treeverse/lakeFS/issues/2397)
-func checkMetadataPrefix(ctx context.Context, repo *catalog.Repository, logger logging.Logger, adapter block.Adapter, repoStorageType block.StorageType) {
-	if repoStorageType != block.StorageTypeGS &&
-		repoStorageType != block.StorageTypeAzure {
-		return
-	}
-
-	const dummyFile = "dummy"
-	if _, err := adapter.Get(ctx, block.ObjectPointer{
-		StorageNamespace: repo.StorageNamespace,
-		Identifier:       dummyFile,
-		IdentifierType:   block.IdentifierTypeRelative,
-	}, -1); err != nil {
-		logger.WithFields(logging.Fields{
-			"path":              dummyFile,
-			"storage_namespace": repo.StorageNamespace,
-		}).Fatal("Can't find dummy file in storage namespace, did you run the migration? " +
-			"(https://docs.lakefs.io/reference/upgrade.html#data-migration-for-version-v0500)")
-	}
 }
 
 // checkForeignRepo checks whether a repo storage namespace matches the block adapter.
 // A foreign repo is a repository which namespace doesn't match the current block adapter.
 // A foreign repo might exist if the lakeFS instance configuration changed after a repository was
-// already created. The behaviour of lakeFS for foreign repos is undefined and should be blocked.
+// already created.
+// The behavior of lakeFS for foreign repos is undefined and should be blocked.
 func checkForeignRepo(repoStorageType block.StorageType, logger logging.Logger, adapterStorageType, repoName string) {
 	if adapterStorageType != repoStorageType.BlockstoreType() {
 		logger.Fatalf("Mismatched adapter detected. lakeFS started with adapter of type '%s', but repository '%s' is of type '%s'",
@@ -433,7 +508,11 @@ func checkForeignRepo(repoStorageType block.StorageType, logger logging.Logger, 
 	}
 }
 
-const runBanner = `
+var bannerTemplate = template.Must(template.New("banner").Parse(runBannerTmpl))
+
+const runBannerTmpl = `
+lakeFS {{ .Version }} - Up and running (^C to shutdown)...
+
 
      ██╗      █████╗ ██╗  ██╗███████╗███████╗███████╗
      ██║     ██╔══██╗██║ ██╔╝██╔════╝██╔════╝██╔════╝
@@ -441,12 +520,7 @@ const runBanner = `
      ██║     ██╔══██║██╔═██╗ ██╔══╝  ██╔══╝  ╚════██║
      ███████╗██║  ██║██║  ██╗███████╗██║     ███████║
      ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝
-
-│
-│ If you're running lakeFS locally for the first time,
-│     complete the setup process at http://127.0.0.1:8000/setup
-│
-
+{{ .SetupMessage }}
 │
 │ For more information on how to use lakeFS,
 │     check out the docs at https://docs.lakefs.io/quickstart/
@@ -459,15 +533,36 @@ const runBanner = `
 
 `
 
-func printWelcome(w io.Writer) {
-	_, _ = fmt.Fprint(w, runBanner)
+const localBanner = `
+│
+│ If you're running lakeFS locally for the first time,
+│     complete the setup process at http://127.0.0.1:8000/setup
+│`
+
+var quickStartBanner = fmt.Sprintf(`
+│
+│ lakeFS running in quickstart mode.
+│     Login at http://127.0.0.1:8000/
+│
+│     Access Key ID    : %s
+│     Secret Access Key: %s
+│
+`, config.DefaultQuickstartKeyID, config.DefaultQuickstartSecretKey)
+
+type bannerData struct {
+	SetupMessage string
+	Version      string
+}
+
+func printWelcome(w io.Writer, banner string) {
+	_, _ = fmt.Fprint(w, banner)
 	_, _ = fmt.Fprintf(w, "Version %s\n\n", version.Version)
 }
 
 const localWarningBanner = `
 WARNING!
 
-Using %s.  This is suitable only for testing! It is NOT SUPPORTED for production.
+Using %s. This is suitable only for testing! It is NOT SUPPORTED for production.
 `
 
 func printLocalWarning(w io.Writer, msg string) {
@@ -475,8 +570,6 @@ func printLocalWarning(w io.Writer, msg string) {
 }
 
 func gracefulShutdown(ctx context.Context, services ...Shutter) {
-	_, _ = fmt.Fprintf(os.Stderr, "lakeFS %s - Up and running (^C to shutdown)...\n", version.Version)
-	printWelcome(os.Stderr)
 	<-ctx.Done()
 
 	_, _ = fmt.Fprintf(os.Stderr, "Shutting down...\n")
@@ -490,7 +583,7 @@ func gracefulShutdown(ctx context.Context, services ...Shutter) {
 }
 
 // enableKVParamsMetrics returns a copy of params.KV with postgres metrics enabled.
-func enableKVParamsMetrics(p params.Config) params.Config {
+func enableKVParamsMetrics(p kvparams.Config) kvparams.Config {
 	if p.Postgres == nil || p.Postgres.Metrics {
 		return p
 	}

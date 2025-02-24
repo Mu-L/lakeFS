@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-test/deep"
 	"github.com/golang/mock/gomock"
-	"github.com/rs/xid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/treeverse/lakefs/pkg/batch"
@@ -228,7 +227,7 @@ func TestManager_ListRepositories(t *testing.T) {
 }
 
 func TestManager_DeleteRepository(t *testing.T) {
-	r, _ := testRefManager(t)
+	r, store := testRefManager(t)
 	ctx := context.Background()
 	repoID := graveler.RepositoryID("example-repo")
 
@@ -271,6 +270,16 @@ func TestManager_DeleteRepository(t *testing.T) {
 		if !errors.Is(err, graveler.ErrRepositoryNotFound) {
 			t.Fatalf("expected ErrRepositoryNotFound, got: %v", err)
 		}
+
+		// Verify no keys on repo partition
+		itr := kv.NewPartitionIterator(ctx, store, (&graveler.RepoMetadata{}).ProtoReflect().Type(), graveler.RepoPartition(repository), 10)
+		defer itr.Close()
+		for itr.Next() {
+			entry := itr.Entry()
+			t.Fatalf("partition expected empty: %s", string(entry.Key))
+		}
+		// Check itr.Next() not false on an error
+		require.NoError(t, itr.Err())
 
 		// Create after delete
 		_, err = r.CreateRepository(ctx, repoID, graveler.Repository{
@@ -330,38 +339,57 @@ func TestManager_CreateBranch(t *testing.T) {
 	})
 	testutil.Must(t, err)
 
-	err = r.CreateBranch(ctx, repository, "f1", graveler.Branch{CommitID: "c1", StagingToken: "s1"})
-	testutil.MustDo(t, "create branch f1", err)
-
-	br, err := r.GetBranch(ctx, repository, "f1")
-	testutil.MustDo(t, "get f1 branch", err)
-	if br == nil {
-		t.Fatal("get branch got nil")
+	testCases := []struct {
+		Name   string
+		Hidden bool
+	}{
+		{
+			Name:   "not hidden",
+			Hidden: false,
+		},
+		{
+			Name:   "hidden",
+			Hidden: true,
+		},
 	}
-	if br.CommitID != "c1" {
-		t.Fatalf("unexpected commit for branch f1: %s - expected: c1", br.CommitID)
-	}
+	for _, tt := range testCases {
+		t.Run(tt.Name, func(t *testing.T) {
+			branchName := graveler.BranchID(tt.Name)
+			err = r.CreateBranch(ctx, repository, branchName, graveler.Branch{CommitID: "c1", StagingToken: "s1", Hidden: tt.Hidden})
+			testutil.MustDo(t, "create branch", err)
 
-	// check we can't create existing
-	err = r.CreateBranch(ctx, repository, "f1", graveler.Branch{CommitID: "c2", StagingToken: "s2"})
-	if !errors.Is(err, graveler.ErrBranchExists) {
-		t.Fatalf("CreateBranch() err = %s, expected already exists", err)
-	}
-	// overwrite by delete and create
-	err = r.DeleteBranch(ctx, repository, "f1")
-	testutil.MustDo(t, "delete branch f1", err)
+			br, err := r.GetBranch(ctx, repository, branchName)
+			testutil.MustDo(t, "get branch", err)
+			if br == nil {
+				t.Fatal("get branch got nil")
+			}
+			if br.CommitID != "c1" {
+				t.Fatalf("unexpected commit for branch: %s - expected: c1", br.CommitID)
+			}
+			require.Equal(t, tt.Hidden, br.Hidden)
 
-	err = r.CreateBranch(ctx, repository, "f1", graveler.Branch{CommitID: "c2", StagingToken: "s2"})
-	testutil.MustDo(t, "create branch f1", err)
+			// check we can't create existing
+			err = r.CreateBranch(ctx, repository, branchName, graveler.Branch{CommitID: "c2", StagingToken: "s2", Hidden: tt.Hidden})
+			if !errors.Is(err, graveler.ErrBranchExists) {
+				t.Fatalf("CreateBranch() err = %s, expected already exists", err)
+			}
+			// overwrite by delete and create
+			err = r.DeleteBranch(ctx, repository, branchName)
+			testutil.MustDo(t, "delete branch", err)
 
-	br, err = r.GetBranch(ctx, repository, "f1")
-	testutil.MustDo(t, "get f1 branch", err)
+			err = r.CreateBranch(ctx, repository, branchName, graveler.Branch{CommitID: "c2", StagingToken: "s2", Hidden: tt.Hidden})
+			testutil.MustDo(t, "create branch", err)
 
-	if br == nil {
-		t.Fatal("get branch got nil")
-	}
-	if br.CommitID != "c2" {
-		t.Fatalf("unexpected commit for branch f1: %s - expected: c2", br.CommitID)
+			br, err = r.GetBranch(ctx, repository, branchName)
+			testutil.MustDo(t, "get f1 branch", err)
+
+			if br == nil {
+				t.Fatal("get branch got nil")
+			}
+			if br.CommitID != "c2" {
+				t.Fatalf("unexpected commit for branch: %s - expected: c2", br.CommitID)
+			}
+		})
 	}
 }
 
@@ -503,13 +531,46 @@ func TestManager_ListBranches(t *testing.T) {
 	})
 	testutil.Must(t, err)
 
-	for _, b := range []graveler.BranchID{"a", "aa", "c", "b", "z", "f"} {
+	visibleBranches := []graveler.BranchID{"a", "ab", "ca", "ba", "za", "fa"}
+	hiddenBranches := []graveler.BranchID{"aa", "ac", "cb", "bb", "zb", "fb"}
+	allBranches := append(visibleBranches, hiddenBranches...)
+	for _, b := range visibleBranches {
 		testutil.Must(t, r.SetBranch(context.Background(), repository, b, graveler.Branch{
 			CommitID: "c2",
 		}))
 	}
+	for _, b := range hiddenBranches {
+		testutil.Must(t, r.SetBranch(context.Background(), repository, b, graveler.Branch{
+			CommitID: "c2",
+			Hidden:   true,
+		}))
+	}
 
-	iter, err := r.ListBranches(context.Background(), repository)
+	// List only visible branches
+	iter, err := r.ListBranches(context.Background(), repository, graveler.ListOptions{ShowHidden: false})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer iter.Close()
+
+	var bvs []graveler.BranchID
+	for iter.Next() {
+		b := iter.Value()
+		bvs = append(bvs, b.BranchID)
+	}
+	if iter.Err() != nil {
+		t.Fatalf("unexpected error: %v", iter.Err())
+	}
+	visibleBranches = append(visibleBranches, "main")
+	sort.Slice(visibleBranches, func(i, j int) bool {
+		return visibleBranches[i] < visibleBranches[j]
+	})
+	if !reflect.DeepEqual(bvs, visibleBranches) {
+		t.Fatalf("unexpected branch list: %v", bvs)
+	}
+
+	// List all branches
+	iter, err = r.ListBranches(context.Background(), repository, graveler.ListOptions{ShowHidden: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -523,7 +584,11 @@ func TestManager_ListBranches(t *testing.T) {
 	if iter.Err() != nil {
 		t.Fatalf("unexpected error: %v", iter.Err())
 	}
-	if !reflect.DeepEqual(bs, []graveler.BranchID{"a", "aa", "b", "c", "f", "main", "z"}) {
+	allBranches = append(allBranches, "main")
+	sort.Slice(allBranches, func(i, j int) bool {
+		return allBranches[i] < allBranches[j]
+	})
+	if !reflect.DeepEqual(bs, allBranches) {
 		t.Fatalf("unexpected branch list: %v", bs)
 	}
 }
@@ -708,7 +773,8 @@ func TestManager_AddCommit(t *testing.T) {
 
 func TestManager_Log(t *testing.T) {
 	r, _ := testRefManager(t)
-	repository, err := r.CreateRepository(context.Background(), "repo1", graveler.Repository{
+	ctx := context.Background()
+	repository, err := r.CreateRepository(ctx, "repo1", graveler.Repository{
 		StorageNamespace: "s3://",
 		CreationDate:     time.Now(),
 		DefaultBranchID:  "main",
@@ -729,7 +795,7 @@ func TestManager_Log(t *testing.T) {
 		if previous != "" {
 			c.Parents = append(c.Parents, previous)
 		}
-		cid, err := r.AddCommit(context.Background(), repository, c)
+		cid, err := r.AddCommit(ctx, repository, c)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -737,7 +803,7 @@ func TestManager_Log(t *testing.T) {
 		ts = ts.Add(time.Second)
 	}
 
-	iter, err := r.Log(context.Background(), repository, previous, false)
+	iter, err := r.Log(ctx, repository, previous, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -802,6 +868,7 @@ func TestManager_LogGraph(t *testing.T) {
 		firstParent bool
 		seek        string
 		start       string
+		since       time.Time
 		expected    []string
 	}{
 		/*
@@ -833,16 +900,21 @@ func TestManager_LogGraph(t *testing.T) {
 			start:    "c7",
 			expected: []string{"c7", "c4", "c2", "c1"},
 		},
+		"since": {
+			start:    "c8",
+			since:    time.Date(2020, time.December, 1, 15, 5, 0, 0, time.UTC),
+			expected: []string{"c8", "c7", "c6", "c5"},
+		},
 	}
 	for name, tst := range tests {
 		t.Run(name, func(t *testing.T) {
-			nextCommitTS, _ := time.Parse(time.RFC3339, "2020-12-01T15:00:00Z")
+			nextCommitTS := time.Date(2020, time.December, 1, 15, 0, 0, 0, time.UTC)
 			commitNameToID := map[string]graveler.CommitID{}
 			addCommit := func(commitName string, parentNames ...string) graveler.CommitID {
 				nextCommitTS = nextCommitTS.Add(time.Minute)
 				parentIDs := make([]graveler.CommitID, 0, len(parentNames))
 				for _, parentName := range parentNames {
-					parentIDs = append(parentIDs, graveler.CommitID(commitNameToID[parentName]))
+					parentIDs = append(parentIDs, commitNameToID[parentName])
 				}
 				c := graveler.Commit{
 					Committer:    "user1",
@@ -865,7 +937,14 @@ func TestManager_LogGraph(t *testing.T) {
 			for _, commitName := range commitNames {
 				addCommit(commitName, dag[commitName]...)
 			}
-			it, err := r.Log(ctx, repository, commitNameToID[tst.start], tst.firstParent)
+
+			// setup time since
+			var since *time.Time
+			if !tst.since.IsZero() {
+				since = &tst.since
+			}
+
+			it, err := r.Log(ctx, repository, commitNameToID[tst.start], tst.firstParent, since)
 			if err != nil {
 				t.Fatal("Error during create Log iterator", err)
 			}
@@ -912,7 +991,7 @@ func TestConsistentCommitIdentity(t *testing.T) {
 	const expected = "f1a106bbeb12d3eb54418d6000f4507501d289d0d0879dcce6f4d31425587df1"
 
 	// Running many times to check that it's actually consistent (see issue #1291)
-	const iterations = 10000
+	const iterations = 50
 
 	for i := 0; i < iterations; i++ {
 		res := addressProvider.ContentAddress(commit)
@@ -1053,140 +1132,6 @@ func TestManager_ListCommits(t *testing.T) {
 	}
 }
 
-func TestManager_ListAddressTokens(t *testing.T) {
-	r, _ := testRefManager(t)
-	repository, err := r.CreateRepository(context.Background(), "repo1", graveler.Repository{
-		StorageNamespace: "s3://",
-		CreationDate:     time.Now(),
-		DefaultBranchID:  "main",
-	})
-	testutil.Must(t, err)
-	addresses := []string{"data/a", "data/aa", "data/b", "data/c", "data/f", "data/z"}
-
-	for _, a := range addresses {
-		testutil.Must(t, r.SetLinkAddress(context.Background(), repository, a))
-	}
-
-	iter, err := r.ListLinkAddresses(context.Background(), repository)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer iter.Close()
-
-	var tokens []string
-	for iter.Next() {
-		t := iter.Value()
-		tokens = append(tokens, t.Address)
-	}
-	if iter.Err() != nil {
-		t.Fatalf("unexpected error: %v", iter.Err())
-	}
-	if !reflect.DeepEqual(tokens, addresses) {
-		t.Fatalf("unexpected branch list: %v", tokens)
-	}
-}
-
-func TestManager_SetGetAddressToken(t *testing.T) {
-	r, _ := testRefManager(t)
-	ctx := context.Background()
-	repository, err := r.CreateRepository(ctx, "repo1", graveler.Repository{
-		StorageNamespace: "s3://",
-		CreationDate:     time.Now(),
-		DefaultBranchID:  "main",
-	})
-	testutil.Must(t, err)
-
-	address := xid.New().String()
-
-	err = r.SetLinkAddress(ctx, repository, address)
-	testutil.MustDo(t, "set address token aa", err)
-
-	// check we can't create existing
-	err = r.SetLinkAddress(ctx, repository, address)
-	if !errors.Is(err, graveler.ErrAddressTokenAlreadyExists) {
-		t.Fatalf("SetAddressToken() err = %s, expected already exists", err)
-	}
-
-	err = r.VerifyLinkAddress(ctx, repository, address)
-	testutil.MustDo(t, "get aa token", err)
-
-	// check the token is deleted
-	err = r.VerifyLinkAddress(ctx, repository, address)
-	if !errors.Is(err, graveler.ErrAddressTokenNotFound) {
-		t.Fatalf("VerifyAddressToken() err = %s, expected not found", err)
-	}
-
-	// create again
-	err = r.SetLinkAddress(ctx, repository, address)
-	testutil.MustDo(t, "set address token aa after delete", err)
-}
-
-func TestManager_IsTokenExpired(t *testing.T) {
-	r, _ := testRefManager(t)
-
-	expired, err := r.IsLinkAddressExpired(&graveler.LinkAddressData{Address: xid.New().String()})
-	testutil.MustDo(t, "is token expired", err)
-	if expired {
-		t.Fatalf("expected token not expired")
-	}
-
-	expired, err = r.IsLinkAddressExpired(&graveler.LinkAddressData{Address: xid.NewWithTime(time.Now().Add(-7 * time.Hour)).String()})
-	testutil.MustDo(t, "is token expired", err)
-	if !expired {
-		t.Fatalf("expected token expired")
-	}
-
-	_, err = r.IsLinkAddressExpired(&graveler.LinkAddressData{Address: "aaa"})
-	if !errors.Is(err, xid.ErrInvalidID) {
-		t.Fatalf("err = %s, expected invalid xid", err)
-	}
-}
-
-func TestManager_DeleteExpiredAddressTokens(t *testing.T) {
-	r, _ := testRefManager(t)
-	ctx := context.Background()
-	repository, err := r.CreateRepository(ctx, "repo1", graveler.Repository{
-		StorageNamespace: "s3://",
-		CreationDate:     time.Now(),
-		DefaultBranchID:  "main",
-	})
-	testutil.Must(t, err)
-
-	a := "data/aaa/" + xid.NewWithTime(time.Now()).String()
-	b := "data/bbb/" + xid.NewWithTime(time.Now().Add(-10*time.Hour)).String() // expired
-	c := "data/ccc/" + xid.NewWithTime(time.Now().Add(-7*time.Hour)).String()  // expired
-
-	tokens := []string{a, b, c}
-	expectedTokens := []string{a}
-
-	for _, a := range tokens {
-		testutil.Must(t, r.SetLinkAddress(context.Background(), repository, a))
-	}
-
-	err = r.DeleteExpiredLinkAddresses(context.Background(), repository)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	iter, err := r.ListLinkAddresses(context.Background(), repository)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer iter.Close()
-
-	var ts []string
-	for iter.Next() {
-		t := iter.Value()
-		ts = append(ts, t.Address)
-	}
-	if iter.Err() != nil {
-		t.Fatalf("unexpected error: %v", iter.Err())
-	}
-	if diff := deep.Equal(ts, expectedTokens); diff != nil {
-		t.Errorf("Found diff in tokens: %s", ts)
-	}
-}
-
 func TestManager_DeleteExpiredImports(t *testing.T) {
 	r, store := testRefManager(t)
 	ctx := context.Background()
@@ -1248,4 +1193,227 @@ func TestManager_DeleteExpiredImports(t *testing.T) {
 	}
 	require.NoError(t, it.Err())
 	require.Equal(t, 2, count)
+}
+
+func TestManager_GetRepositoryMetadata(t *testing.T) {
+	ctx := context.Background()
+	r, _ := testRefManager(t)
+	const (
+		repoID = "repo1"
+	)
+	repository, err := r.CreateRepository(context.Background(), repoID, graveler.Repository{
+		StorageNamespace: "s3://",
+		CreationDate:     time.Now(),
+		DefaultBranchID:  "main",
+	})
+	testutil.Must(t, err)
+
+	t.Run("get_on_non_existing_repo", func(t *testing.T) {
+		_, err := r.GetRepositoryMetadata(ctx, "not_exist")
+		require.ErrorIs(t, err, graveler.ErrNotFound)
+	})
+
+	t.Run("basic", func(t *testing.T) {
+		metadata, err := r.GetRepositoryMetadata(ctx, repository.RepositoryID)
+		require.NoError(t, err)
+		require.Nil(t, metadata)
+	})
+}
+
+func TestManager_SetRepositoryMetadata(t *testing.T) {
+	ctx := context.Background()
+	r, store := testRefManager(t)
+	const (
+		repoID = "repo1"
+		key    = "test_key"
+	)
+	repository, err := r.CreateRepository(context.Background(), repoID, graveler.Repository{
+		StorageNamespace: "s3://",
+		CreationDate:     time.Now(),
+		DefaultBranchID:  "main",
+	})
+	testutil.Must(t, err)
+	tests := []struct {
+		name             string
+		f                graveler.RepoMetadataUpdateFunc
+		err              error
+		expectedMetadata graveler.RepositoryMetadata
+	}{
+		{
+			name: "success_branch_update",
+			f: func(metadata graveler.RepositoryMetadata) (graveler.RepositoryMetadata, error) {
+				metadata[key] = "success"
+				return metadata, nil
+			},
+			expectedMetadata: graveler.RepositoryMetadata{key: "success"},
+		},
+		{
+			name: "failed_metadata_update_due_to_changes",
+			f: func(metadata graveler.RepositoryMetadata) (graveler.RepositoryMetadata, error) {
+				m := graveler.RepoMetadata{
+					Metadata: graveler.RepositoryMetadata{
+						key: "failed",
+					},
+				}
+				_ = kv.SetMsg(ctx, store, graveler.RepoPartition(repository), []byte(graveler.RepoMetadataPath()), &m)
+				metadata[key] = "not_expected"
+				return metadata, nil
+			},
+			err:              kv.ErrPredicateFailed,
+			expectedMetadata: graveler.RepositoryMetadata{key: "failed"},
+		},
+		{
+			name: "failed_update_on_validation",
+			f: func(metadata graveler.RepositoryMetadata) (graveler.RepositoryMetadata, error) {
+				return nil, graveler.ErrInvalid
+			},
+			err:              graveler.ErrInvalid,
+			expectedMetadata: graveler.RepositoryMetadata{key: "failed"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err = r.SetRepositoryMetadata(ctx, repository, tt.f)
+			require.ErrorIs(t, err, tt.err)
+
+			metadata, err := r.GetRepositoryMetadata(ctx, repository.RepositoryID)
+			require.NoError(t, err)
+			require.Equal(t, tt.expectedMetadata, metadata)
+		})
+	}
+}
+
+func TestManager_GetPullRequest(t *testing.T) {
+	r, store := testRefManager(t)
+	repository, err := r.CreateRepository(context.Background(), "repo1", graveler.Repository{
+		StorageNamespace: "s3://",
+		CreationDate:     time.Now(),
+		DefaultBranchID:  "main",
+	})
+	testutil.Must(t, err)
+	ctx := context.Background()
+
+	t.Run("get_pull_request_exists", func(t *testing.T) {
+		mergeCommitID := "abc"
+		expected := graveler.PullRequestRecord{
+			ID: "pullID",
+			PullRequest: graveler.PullRequest{
+				CreationDate:   time.Now().UTC(),
+				Status:         graveler.PullRequestStatus_CLOSED,
+				Title:          "some title",
+				Author:         "some author",
+				Description:    "some description",
+				Source:         "dev",
+				Destination:    "main",
+				MergedCommitID: &mergeCommitID,
+			},
+		}
+		require.NoError(t, r.CreatePullRequest(ctx, repository, expected.ID, &expected.PullRequest))
+
+		// Verify secondary index
+		data, err := store.Get(ctx, []byte(ref.PullsPartitionKey), []byte(ref.PullBySrcDstPath(repository, expected.Source, expected.Destination)))
+		require.NoError(t, err)
+		sec := kv.SecondaryIndex{}
+		require.NoError(t, proto.Unmarshal(data.Value, &sec))
+		require.Equal(t, expected.ID.String(), string(sec.PrimaryKey))
+
+		// Verify we can get pull from secondary index
+		pull, err := r.GetPullRequest(ctx, repository, graveler.PullRequestID(sec.PrimaryKey))
+		require.NoError(t, err)
+		require.Equal(t, expected.PullRequest, *pull)
+	})
+
+	t.Run("get_pull_request_doesnt_exists", func(t *testing.T) {
+		_, err := r.GetPullRequest(ctx, repository, "pull2")
+		require.ErrorIs(t, err, graveler.ErrPullRequestNotFound)
+	})
+}
+
+func TestManager_DeletePullRequest(t *testing.T) {
+	r, store := testRefManager(t)
+	repository, err := r.CreateRepository(context.Background(), "repo1", graveler.Repository{
+		StorageNamespace: "s3://",
+		CreationDate:     time.Now(),
+		DefaultBranchID:  "main",
+	})
+	testutil.Must(t, err)
+	ctx := context.Background()
+
+	t.Run("delete_pull_request_exists", func(t *testing.T) {
+		rec := graveler.PullRequestRecord{
+			ID: "",
+			PullRequest: graveler.PullRequest{
+				CreationDate:   time.Now().UTC(),
+				Status:         graveler.PullRequestStatus_CLOSED,
+				Title:          "some title",
+				Author:         "some author",
+				Description:    "some description",
+				Source:         "dev",
+				Destination:    "main",
+				MergedCommitID: nil,
+			},
+		}
+		require.NoError(t, r.CreatePullRequest(ctx, repository, rec.ID, &rec.PullRequest))
+
+		// Delete Pull request
+		err := r.DeletePullRequest(ctx, repository, rec.ID)
+		require.NoError(t, err)
+
+		// Verify secondary index deleted
+		_, err = store.Get(ctx, []byte(ref.PullsPartitionKey), []byte(ref.PullBySrcDstPath(repository, rec.Source, rec.Destination)))
+		require.ErrorIs(t, err, kv.ErrNotFound)
+	})
+
+	t.Run("delete_pull_request_doesnt_exists", func(t *testing.T) {
+		// No error expected if key not found
+		require.NoError(t, r.DeletePullRequest(ctx, repository, "pull2"))
+	})
+}
+
+func TestManager_UpdatePullRequest(t *testing.T) {
+	r, _ := testRefManager(t)
+	repository, err := r.CreateRepository(context.Background(), "repo1", graveler.Repository{
+		StorageNamespace: "s3://",
+		CreationDate:     time.Now(),
+		DefaultBranchID:  "main",
+	})
+	testutil.Must(t, err)
+	ctx := context.Background()
+	expected := graveler.PullRequestRecord{
+		ID: "",
+		PullRequest: graveler.PullRequest{
+			CreationDate:   time.Now().UTC(),
+			Status:         graveler.PullRequestStatus_CLOSED,
+			Title:          "some title",
+			Author:         "some author",
+			Description:    "some description",
+			Source:         "dev",
+			Destination:    "main",
+			MergedCommitID: nil,
+		},
+	}
+
+	t.Run("update_pull_request_exists", func(t *testing.T) {
+		require.NoError(t, r.CreatePullRequest(ctx, repository, expected.ID, &expected.PullRequest))
+
+		err := r.UpdatePullRequest(ctx, repository, expected.ID, func(request *graveler.PullRequest) (*graveler.PullRequest, error) {
+			// Modify pull
+			expected.Title = "foo"
+			expected.Description = "bar"
+			expected.Destination = "abc"
+			return &expected.PullRequest, nil
+		})
+		require.NoError(t, err)
+		pull, err := r.GetPullRequest(ctx, repository, expected.ID)
+		require.NoError(t, err)
+		require.Equal(t, expected.PullRequest, *pull)
+	})
+
+	t.Run("update_pull_request_doesnt_exists", func(t *testing.T) {
+		// No error expected if key not found
+		require.ErrorIs(t, r.UpdatePullRequest(ctx, repository, "pull2", func(request *graveler.PullRequest) (*graveler.PullRequest, error) {
+			t.Fatalf("Should not reach")
+			return nil, nil
+		}), graveler.ErrPullRequestNotFound)
+	})
 }
