@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	kvparams "github.com/treeverse/lakefs/pkg/kv/params"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
 	"github.com/treeverse/lakefs/pkg/logging"
 )
 
@@ -65,6 +65,6 @@ func ValidateSchemaVersion(ctx context.Context, store Store) (int, error) {
 		return kvVersion, fmt.Errorf("ACL migration required. Please run 'lakefs migrate up': %w", ErrMigrationRequired)
 	}
 
-	logging.Default().WithField("version", kvVersion).Info("KV valid")
+	logging.FromContext(ctx).WithField("version", kvVersion).Info("KV valid")
 	return kvVersion, nil
 }

@@ -22,6 +22,8 @@
 }
 
 $white: #ffffff;
+$french-rose: #f24886;
+$maroon: #b62d55;
 $pale-grey: #f1f9f9;
 $light-blue-grey: #def1f1;
 $info-blue: #3498db;
@@ -223,28 +225,6 @@ body {
 		background-color: #ffffff; color: #279890;
 	}
 
-	.note {
-		background-color: $whitegrey;
-		border-left: 4px solid $aqua-marine;
-		border-radius: 0px 2px 2px 0px;
-		padding: 8px 20px;
-	}
-	.note-info {
-		border-left: none;
-		color: $black;
-	    background-color: $aqua-marine;
-
-		a {
-			color: $black;
-			font-weight: 500;
-		}
-
-		code {
-			color: $black;
-		}
-	}
-
-
 	.main-content {
 		h1,
 		h2,
@@ -323,11 +303,12 @@ body {
 						margin: 0 0 0 20px;
 						padding: 18px;
 						border-radius: 6px;
-						background-color: $teal-green;
-						border: 2px solid $teal-green;
+						background-color: $french-rose;
+						border: 2px solid $french-rose;
 						&:hover {
-							background-color: $white;
-							color: $teal-green;
+                            background-color: $maroon;
+                            border: 2px solid $maroon;
+                            color: $white;
 						}
 					}
 				}
@@ -524,6 +505,12 @@ body {
 			display: none;
 		}
 	}
+}
+
+.label {
+	text-transform: none !important;
+	margin-left: 0 !important;
+	margin-right: 0 !important;
 }
 
 //Search Fixes
@@ -971,6 +958,7 @@ div.highlighter-rouge{
 	}
 	position: sticky;
 	top: 180px;
+	z-index: 9999;
 	.feedback-buttons {
 		position: absolute;
 		right: 70px;
@@ -1046,12 +1034,6 @@ img.quickstart {
 	border-width: thin;
 	border-color: black;
 	border-style: ridge;
-}
-
-.note {
-	a:not([class]) {
-		text-decoration-color: inherit;
-	}
 }
 
 .breadcrumb-nav { margin-top: 1rem; } 

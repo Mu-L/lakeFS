@@ -63,9 +63,9 @@ export const DebouncedFormControl = React.forwardRef((props, ref) => {
 });
 DebouncedFormControl.displayName = "DebouncedFormControl";
 
-export const Loading = () => {
+export const Loading = ({message = "Loading..."}) => {
     return (
-        <Alert variant={"info"}>Loading...</Alert>
+        <Alert variant={"info"}>{message}</Alert>
     );
 };
 
@@ -81,12 +81,15 @@ export const AlertError = ({error, onDismiss = null, className = null}) => {
     let err = error;
     while (err.error) err = err.error;
     if (err.message) content = err.message;
+
+    const alertClassName = `${className} text-wrap text-break`.trim();
+
     if (onDismiss !== null) {
-        return <Alert className={className} variant="danger" dismissible onClose={onDismiss}>{content}</Alert>;
+        return <Alert className={alertClassName} variant="danger" dismissible onClose={onDismiss}>{content}</Alert>;
     }
     
     return (
-        <Alert className={className} variant="danger">{content}</Alert>
+        <Alert className={alertClassName} variant="danger">{content}</Alert>
     );
 };
 
@@ -105,10 +108,10 @@ export const FormattedDate = ({ dateValue, format = "MM/DD/YYYY HH:mm:ss" }) => 
 };
 
 
-export const ActionGroup = ({ children, orientation = "left" }) => {
+export const ActionGroup = ({ children, orientation = "left", className = "" }) => {
     const side = (orientation === 'right') ? 'ms-auto' : '';
     return (
-        <div role="toolbar" className={`${side} mb-2 btn-toolbar action-group-${orientation}`}>
+        <div role="toolbar" className={`${side} mb-2 btn-toolbar action-group-${orientation} ${className}`}>
             {children}
         </div>
     );
@@ -335,18 +338,26 @@ export const RefreshButton = ({ onClick, size = "md", variant = "light", tooltip
     );
 };
 
-export const DataTable = ({ headers, results, rowFn, keyFn = (row) => row[0], actions = [], emptyState = null }) => {
+export const DataTable = ({ headers, results, rowFn, keyFn = (row) => row[0], actions = [],
+                              emptyState = null, firstFixedCol = false }) => {
 
     if ((!results || results.length === 0) && emptyState !== null) {
         return <Alert variant="warning">{emptyState}</Alert>;
     }
 
     return (
-        <Table>
+        <Table className="w-100" style={{ tableLayout: "fixed" }}>
             <thead>
                 <tr>
-                {headers.map(header => (
-                    <th key={header}>{header}</th>
+                {headers.map((header, i) => (
+                    <th
+                        key={header}
+                        title={header}
+                        style={firstFixedCol && i === 0 ? { width: "30px" } : {}}
+                        className="text-nowrap overflow-hidden text-truncate align-middle"
+                    >
+                        {header}
+                    </th>
                 ))}
                 {(!!actions && actions.length > 0) && <th/>}
                 </tr>
@@ -355,7 +366,11 @@ export const DataTable = ({ headers, results, rowFn, keyFn = (row) => row[0], ac
             {results.map(row => (
                 <tr key={keyFn(row)}>
                     {rowFn(row).map((cell, i) => (
-                        <td key={`${keyFn(row)}-${i}`}>
+                        <td
+                            key={`${keyFn(row)}-${i}`}
+                            title={keyFn(row)}
+                            className="text-nowrap overflow-hidden text-truncate align-middle"
+                        >
                             {cell}
                         </td>
                     ))}

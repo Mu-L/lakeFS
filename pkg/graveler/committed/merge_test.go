@@ -85,6 +85,7 @@ func newTestMetaRange(ranges []testRange) *testMetaRange {
 }
 
 type testCase struct {
+	storageID      graveler.StorageID
 	baseRange      *testMetaRange
 	sourceRange    *testMetaRange
 	destRange      *testMetaRange
@@ -114,6 +115,39 @@ func createIter(tr *testMetaRange) committed.Iterator {
 func Test_merge(t *testing.T) {
 	tests := testCases{
 		"dest range added before": {
+			baseRange: newTestMetaRange([]testRange{
+				{
+					rng:     committed.Range{ID: "base:k3-k6", MinKey: committed.Key("k3"), MaxKey: committed.Key("k6"), Count: 2, EstimatedSize: 1234},
+					records: nil,
+				}, {rng: committed.Range{ID: "base:k11-k12", MinKey: committed.Key("k11"), MaxKey: committed.Key("k12"), Count: 2, EstimatedSize: 4444}, records: []testValueRecord{
+					{"k11", "base:k11"}, {"k12", "base:k12"},
+				}},
+			}),
+			sourceRange: newTestMetaRange([]testRange{{
+				rng:     committed.Range{ID: "base:k3-k6", MinKey: committed.Key("k3"), MaxKey: committed.Key("k6"), Count: 2, EstimatedSize: 1234},
+				records: nil,
+			}}),
+			destRange: newTestMetaRange([]testRange{
+				{rng: committed.Range{ID: "dest:k1-k2", MinKey: committed.Key("k1"), MaxKey: committed.Key("k2"), Count: 2, EstimatedSize: 1234}},
+				{rng: committed.Range{ID: "base:k3-k6", MinKey: committed.Key("k3"), MaxKey: committed.Key("k6"), Count: 2, EstimatedSize: 1234}},
+			}),
+			expectedResult: []testRunResult{{
+				mergeStrategies: []graveler.MergeStrategy{graveler.MergeStrategyNone, graveler.MergeStrategyDest, graveler.MergeStrategySrc},
+				expectedActions: []writeAction{
+					{
+						action: actionTypeWriteRange,
+						rng:    committed.Range{ID: "dest:k1-k2", MinKey: committed.Key("k1"), MaxKey: committed.Key("k2"), Count: 2, EstimatedSize: 1234},
+					},
+					{
+						action: actionTypeWriteRange,
+						rng:    committed.Range{ID: "base:k3-k6", MinKey: committed.Key("k3"), MaxKey: committed.Key("k6"), Count: 2, EstimatedSize: 1234},
+					},
+				},
+				expectedErr: nil,
+			}},
+		},
+		"dest range added before- alternate StorageID": {
+			storageID: "summat_else",
 			baseRange: newTestMetaRange([]testRange{
 				{
 					rng:     committed.Range{ID: "base:k3-k6", MinKey: committed.Key("k3"), MaxKey: committed.Key("k6"), Count: 2, EstimatedSize: 1234},
@@ -1727,11 +1761,15 @@ func runMergeTests(tests testCases, t *testing.T) {
 
 					writer.EXPECT().Abort().AnyTimes()
 					metaRangeId := graveler.MetaRangeID("merge")
-					writer.EXPECT().Close().Return(&metaRangeId, nil).AnyTimes()
-					committedManager := committed.NewCommittedManager(metaRangeManager, rangeManager, params)
-					_, err := committedManager.Merge(ctx, "ns", destMetaRangeID, sourceMetaRangeID, baseMetaRangeID, mergeStrategy)
-					if err != expectedResult.expectedErr {
-						t.Fatal(err)
+					writer.EXPECT().Close(gomock.Any()).Return(&metaRangeId, nil).AnyTimes()
+					rangeManagers := make(map[graveler.StorageID]committed.RangeManager)
+					rangeManagers[tst.storageID] = rangeManager
+					metaRangeManagers := make(map[graveler.StorageID]committed.MetaRangeManager)
+					metaRangeManagers[tst.storageID] = metaRangeManager
+					committedManager := committed.NewCommittedManager(metaRangeManagers, rangeManagers, params)
+					_, err := committedManager.Merge(ctx, tst.storageID, "ns", destMetaRangeID, sourceMetaRangeID, baseMetaRangeID, mergeStrategy)
+					if !errors.Is(err, expectedResult.expectedErr) {
+						t.Fatalf("Merge error='%v', expected='%v'", err, expectedResult.expectedErr)
 					}
 				})
 			}

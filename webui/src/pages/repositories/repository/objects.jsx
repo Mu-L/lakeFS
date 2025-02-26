@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import dayjs from "dayjs";
-import { UploadIcon } from "@primer/octicons-react";
-import { RepositoryPageLayout } from "../../../lib/components/repository/layout";
+import { useOutletContext } from "react-router-dom";
+import {CheckboxIcon, UploadIcon, XIcon} from "@primer/octicons-react";
 import RefDropdown from "../../../lib/components/repository/refDropdown";
 import {
     ActionGroup,
@@ -15,13 +15,11 @@ import {
 import Button from "react-bootstrap/Button";
 import Modal from "react-bootstrap/Modal";
 import Form from "react-bootstrap/Form";
-import Row from "react-bootstrap/Row";
-import Col from "react-bootstrap/Col";
 import Alert from "react-bootstrap/Alert";
 import { BsCloudArrowUp } from "react-icons/bs";
 
-import {Tree} from "../../../lib/components/repository/tree";
-import {objects, staging, retention, repositories, imports, NotFoundError} from "../../../lib/api";
+import {humanSize, Tree} from "../../../lib/components/repository/tree";
+import {objects, staging, retention, repositories, imports, NotFoundError, uploadWithProgress, parseRawHeaders} from "../../../lib/api";
 import {useAPI, useAPIWithPagination} from "../../../lib/hooks/api";
 import {useRefs} from "../../../lib/hooks/repo";
 import {useRouter} from "../../../lib/hooks/router";
@@ -37,13 +35,20 @@ import {
 import { Box } from "@mui/material";
 import { RepoError } from "./error";
 import { getContentType, getFileExtension, FileContents } from "./objectViewer";
-import { OverlayTrigger } from "react-bootstrap";
+import {OverlayTrigger, ProgressBar} from "react-bootstrap";
 import Tooltip from "react-bootstrap/Tooltip";
 import { useSearchParams } from "react-router-dom";
-import { useStorageConfig } from "../../../lib/hooks/storageConfig";
+import { useStorageConfigs } from "../../../lib/hooks/storageConfig";
+import { getRepoStorageConfig } from "./utils";
+import {useDropzone} from "react-dropzone";
+import Container from "react-bootstrap/Container";
+import Row from "react-bootstrap/Row";
+import Col from "react-bootstrap/Col";
+import pMap from "p-map";
 
 const README_FILE_NAME = "README.md";
 const REPOSITORY_AGE_BEFORE_GC = 14;
+const MAX_PARALLEL_UPLOADS = 5;
 
 const ImportButton = ({ variant = "success", onClick, config }) => {
   const tip = config.import_support
@@ -174,20 +179,21 @@ const ImportModal = ({config, repoId, referenceId, referenceType, path = '', onD
                 </Modal.Header>
                 <Modal.Body>
                     {
-                        (importPhase === ImportPhase.NotStarted ||
-                            importPhase === ImportPhase.Failed) &&
+
                         <ImportForm
                             config={config}
+                            repo={repoId}
+                            branch={branchId}
                             pathStyle={pathStyle}
                             sourceRef={sourceRef}
                             destRef={destRef}
                             updateSrcValidity={(isValid) => setIsImportEnabled(isValid)}
                             path={path}
                             commitMsgRef={commitMsgRef}
-                            shouldAddPath={true}
                             metadataFields={metadataFields}
                             setMetadataFields={setMetadataFields}
                             err={importError}
+                            className={importPhase === ImportPhase.NotStarted || importPhase === ImportPhase.Failed ? '' : 'd-none'}
                         />
                     }
                     {
@@ -221,87 +227,179 @@ const ImportModal = ({config, repoId, referenceId, referenceType, path = '', onD
   );
 };
 
-const UploadButton = ({
-  config,
-  repo,
-  reference,
-  path,
-  onDone,
-  onClick,
-  onHide,
-  show = false,
-}) => {
+
+
+function extractChecksumFromResponse(parsedHeaders) {
+  if (parsedHeaders['content-md5']) {
+    // drop any quote and space
+    return parsedHeaders['content-md5'];
+  }
+  // fallback to ETag
+  if (parsedHeaders['etag']) {
+    // drop any quote and space
+    return parsedHeaders['etag'].replace(/[" ]+/g, "");
+  }
+  return null;
+}
+
+const uploadFile = async (config, repo, reference, path, file, onProgress) => {  
+  const fpath = destinationPath(path, file);  
+  if (config.pre_sign_support_ui) {
+    let additionalHeaders;
+    if (config.blockstore_type === "azure") {
+      additionalHeaders = { "x-ms-blob-type": "BlockBlob" }
+    }
+    const getResp = await staging.get(repo.id, reference.id, fpath, config.pre_sign_support_ui);
+    try {
+      const uploadResponse = await uploadWithProgress(getResp.presigned_url, file, 'PUT', onProgress, additionalHeaders);
+      const parsedHeaders = parseRawHeaders(uploadResponse.rawHeaders);
+      const checksum = extractChecksumFromResponse(parsedHeaders);
+      await staging.link(repo.id, reference.id, fpath, getResp, checksum, file.size, file.type);
+    } catch(error) {
+       throw new Error(`Error uploading file- HTTP ${error.status}${error.response ? `: ${error.response}` : ''}`);
+    }
+  } else {
+    await objects.upload(repo.id, reference.id, fpath, file, onProgress);
+    }
+};
+
+const destinationPath = (path, file) => {
+  return `${path ? path : ""}${file.path.replace(/\\/g, '/').replace(/^\//, '')}`;
+};
+
+const UploadCandidate = ({ repo, reference, path, file, state, onRemove = null }) => {
+  const fpath = destinationPath(path, file)
+  let uploadIndicator = null;
+  if (state && state.status === "uploading") {
+    uploadIndicator = <ProgressBar variant="success" now={state.percent}/>
+  } else if (state && state.status === "done") {
+    uploadIndicator = <strong><CheckboxIcon/></strong>
+  } else if (!state && onRemove !== null) {
+    uploadIndicator = (
+      <a  href="#" onClick={ e => {
+        e.preventDefault()
+        onRemove()
+      }}>
+        <XIcon />
+      </a>
+    );
+  }
+  return (
+    <Container>
+      <Row className={`upload-item upload-item-${state ? state.status : "none"}`}>
+        <Col>
+          <span className="path">
+            lakefs://{repo.id}/{reference.id}/{fpath}
+          </span>
+        </Col>
+        <Col xs md="2">
+          <span className="size">
+            {humanSize(file.size)}
+          </span>
+        </Col>
+        <Col xs md="1">
+          <span className="upload-state">
+            {uploadIndicator ? uploadIndicator : <></>}
+          </span>
+        </Col>
+      </Row>
+    </Container>
+  )
+};
+
+const UploadButton = ({config, repo, reference, path, onDone, onClick, onHide, show = false, disabled = false}) => {
   const initialState = {
     inProgress: false,
     error: null,
     done: false,
   };
+  const [currentPath, setCurrentPath] = useState(path);
   const [uploadState, setUploadState] = useState(initialState);
+  const [files, setFiles] = useState([]);
+  const [fileStates, setFileStates] = useState({});
+  const [abortController, setAbortController] = useState(null)
+  const onDrop = useCallback(acceptedFiles => {
+    setFiles([...acceptedFiles])
+  }, [files])
 
-  const textRef = useRef(null);
-  const fileRef = useRef(null);
+  const { getRootProps, getInputProps, isDragAccept } = useDropzone({onDrop})
 
   if (!reference || reference.type !== RefTypeBranch) return <></>;
 
   const hide = () => {
-    if (uploadState.inProgress) return;
+    if (uploadState.inProgress) {
+      if (abortController !== null) {
+          abortController.abort()
+      } else {
+        return
+      }
+    }
     setUploadState(initialState);
+    setFileStates({});
+    setFiles([]);
+    setCurrentPath(path);
+    setAbortController(null)
     onHide();
   };
+
+  useEffect(() => {
+    setCurrentPath(path)
+  }, [path])
 
   const upload = async () => {
-    setUploadState({
-      ...initialState,
-      inProgress: true,
-    });
-    try {
-      if (config.pre_sign_support_ui) {
-        const getResp = await staging.get(
-          repo.id,
-          reference.id,
-          textRef.current.value,
-          config.pre_sign_support_ui
-        );
-
-        const putResp = await fetch(getResp.presigned_url, {
-          method: "PUT",
-          mode: "cors",
-          body: fileRef.current.files[0],
-        });
-
-        const etag = putResp.headers.get("ETag").replace(/["]/g, "");
-        await staging.link(
-          repo.id,
-          reference.id,
-          textRef.current.value,
-          getResp,
-          etag,
-          fileRef.current.files[0].size
-        );
-      } else {
-        await objects.upload(
-          repo.id,
-          reference.id,
-          textRef.current.value,
-          fileRef.current.files[0]
-        );
-      }
-      setUploadState({ ...initialState });
-      onDone();
-    } catch (error) {
-      setUploadState({ ...initialState, error });
-      throw error;
+    if (files.length < 1) {
+      return
     }
-    onHide();
+
+    const abortController = new AbortController()
+    setAbortController(abortController)
+
+    const mapper = async (file) => {
+      try {
+        setFileStates(next => ( {...next, [file.path]: {status: 'uploading', percent: 0}}))
+        await uploadFile(config, repo, reference, currentPath, file, progress => {
+          setFileStates(next => ( {...next, [file.path]: {status: 'uploading', percent: progress}}))
+        })
+      } catch (error) {
+        setFileStates(next => ( {...next, [file.path]: {status: 'error'}}))
+        setUploadState({ ...initialState, error });
+        throw error;
+      }
+      setFileStates(next => ( {...next, [file.path]: {status: 'done'}}))
+    }
+
+    setUploadState({...initialState,  inProgress: true });
+    try {
+      await pMap(files, mapper, {
+        concurrency: MAX_PARALLEL_UPLOADS,
+        signal: abortController.signal
+      });
+      onDone();
+      hide();
+    } catch (error) {
+      if (error instanceof DOMException) {
+        // abort!
+        onDone();
+        hide();
+      } else {
+        setUploadState({ ...initialState, error });
+      }
+    }
+
+
   };
 
-  const basePath = `${repo.id}/${reference.id}/\u00A0`;
+  const changeCurrentPath = useCallback(e => {
+    setCurrentPath(e.target.value)
+  }, [setCurrentPath])
 
-  const pathStyle = { minWidth: "25%" };
+  const onRemoveCandidate = useCallback(file => {
+    return () => setFiles(current => current.filter(f => f !== file))
+  }, [setFiles])
 
   return (
     <>
-      <Modal show={show} onHide={hide}>
+      <Modal size="xl" show={show} onHide={hide}>
         <Modal.Header closeButton>
           <Modal.Title>Upload Object</Modal.Title>
         </Modal.Header>
@@ -309,8 +407,8 @@ const UploadButton = ({
           <Form
             onSubmit={(e) => {
               if (uploadState.inProgress) return;
-              upload();
               e.preventDefault();
+              upload();
             }}
           >
             {config?.warnings && (
@@ -318,60 +416,61 @@ const UploadButton = ({
                 <Warnings warnings={config.warnings} />
               </Form.Group>
             )}
+
             <Form.Group controlId="path" className="mb-3">
-              <Row className="g-0">
-                <Col className="col-auto d-flex align-items-center justify-content-start">
-                  {basePath}
-                </Col>
-                <Col style={pathStyle}>
-                  <Form.Control
-                    type="text"
-                    placeholder="Object name"
-                    autoFocus
-                    name="text"
-                    ref={textRef}
-                    defaultValue={path}
-                  />
-                </Col>
-              </Row>
+              <Form.Text>Path</Form.Text>
+              <Form.Control disabled={uploadState.inProgress} defaultValue={currentPath} onChange={changeCurrentPath}/>
             </Form.Group>
 
-                        <Form.Group controlId="content" className="mb-3">
-                            <Form.Control
-                                type="file"
-                                name="content"
-                                ref={fileRef}
-                                onChange={(e) => {
-                                    const currPath = textRef.current.value.substr(0, textRef.current.value.lastIndexOf('/') + 1);
-                                    const currName = (e.currentTarget.files.length > 0) ? e.currentTarget.files[0].name : ""
-                                    textRef.current.value = currPath + currName;
-                                }}
-                            />
-                        </Form.Group>
-                    </Form>
-                    {(uploadState.error) ? (<AlertError error={uploadState.error}/>) : (<></>)}
+            <Form.Group controlId="content" className="mb-3">
+              <div {...getRootProps({className: 'dropzone'})}>
+                  <input {...getInputProps()} />
+                  <div className={isDragAccept ? "file-drop-zone file-drop-zone-focus" : "file-drop-zone"}>
+                    Drag &apos;n&apos; drop files or folders here (or click to select)
+                  </div>
+              </div>
+              <aside className="mt-3">
+                {(files && files.length > 0) &&
+                  <h5>{files.length} File{files.length > 1 ? "s":""} to upload ({humanSize(files.reduce((a,f) => a + f.size ,0))})</h5>
+                }
+                {files && files.map(file =>
+                    <UploadCandidate
+                      key={file.path}
+                      config={config}
+                      repo={repo}
+                      reference={reference}
+                      file={file}
+                      path={currentPath}
+                      state={fileStates[file.path]}
+                      onRemove={!uploadState.inProgress ? onRemoveCandidate(file) : null}
+                    />
+                )}
+              </aside>
+            </Form.Group>
+          </Form>
+        {(uploadState.error) ? (<AlertError error={uploadState.error}/>) : (<></>)}
+      </Modal.Body>
+    <Modal.Footer>
+        <Button variant="secondary" onClick={hide}>
+            Cancel
+        </Button>
+        <Button variant="success" disabled={uploadState.inProgress || files.length < 1} onClick={() => {
+            if (uploadState.inProgress) return;
+            upload()
+        }}>
+            {(uploadState.inProgress) ? 'Uploading...' : 'Upload'}
+        </Button>
+    </Modal.Footer>
+  </Modal>
 
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button variant="secondary" disabled={uploadState.inProgress} onClick={hide}>
-                        Cancel
-                    </Button>
-                    <Button variant="success" disabled={uploadState.inProgress} onClick={() => {
-                        if (uploadState.inProgress) return;
-                        upload()
-                    }}>
-                        {(uploadState.inProgress) ? 'Uploading...' : 'Upload'}
-                    </Button>
-                </Modal.Footer>
-            </Modal>
-
-      <Button
-        variant={!config.import_support ? "success" : "light"}
-        onClick={onClick}
+    <Button
+      variant={!config.import_support ? "success" : "light"}
+      disabled={disabled}
+      onClick={onClick}
       >
-        <UploadIcon /> Upload Object
-      </Button>
-    </>
+      <UploadIcon /> Upload Object
+    </Button>
+  </>
   );
 };
 
@@ -514,7 +613,7 @@ const NoGCRulesWarning = ({ repoId }) => {
         <strong>Warning</strong>: No garbage collection rules configured for
         this repository.{" "}
         <a
-          href="https://docs.lakefs.io/howto/garbage-collection.html"
+          href="https://docs.lakefs.io/howto/garbage-collection/"
           target="_blank"
           rel="noreferrer"
         >
@@ -527,7 +626,7 @@ const NoGCRulesWarning = ({ repoId }) => {
   return <></>;
 };
 
-const ObjectsBrowser = ({ config, configError }) => {
+const ObjectsBrowser = ({ config }) => {
   const router = useRouter();
   const { path, after, importDialog } = router.query;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -550,8 +649,8 @@ const ObjectsBrowser = ({ config, configError }) => {
     }
   }, [router.route, importDialog, searchParams, setSearchParams]);
 
-  if (loading || !config) return <Loading />;
-  if (error || configError) return <RepoError error={error || configError} />;
+  if (loading) return <Loading />;
+  if (error) return <RepoError error={error} />;
 
   return (
     <>
@@ -608,6 +707,7 @@ const ObjectsBrowser = ({ config, configError }) => {
               setShowUpload(false);
             }}
             show={showUpload}
+            disabled={repo?.read_only}
           />
           <ImportButton onClick={() => setShowImport(true)} config={config} />
           <ImportModal
@@ -675,14 +775,17 @@ const ObjectsBrowser = ({ config, configError }) => {
 };
 
 const RepositoryObjectsPage = () => {
-  const config = useStorageConfig();
+    const {repo} = useRefs();
+    const {configs: storageConfigs, loading: configsLoading, error: configsError} = useStorageConfigs();
+    const {storageConfig, loading: configLoading, error: configError} = getRepoStorageConfig(storageConfigs, repo);
 
-  return (
-    <RepositoryPageLayout activePage={"objects"}>
-      {config.loading && <Loading />}
-      <ObjectsBrowser config={config} configError={config.error} />
-    </RepositoryPageLayout>
-  );
+    const [setActivePage] = useOutletContext();
+    useEffect(() => setActivePage("objects"), [setActivePage]);
+
+    if (configsLoading || configLoading) return <Loading/>;
+    if (configsError || configError) return <RepoError error={configsError || configError}/>;
+
+    return <ObjectsBrowser config={storageConfig}/>;
 };
 
 export default RepositoryObjectsPage;

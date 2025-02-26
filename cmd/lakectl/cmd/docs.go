@@ -11,14 +11,12 @@ import (
 
 // language=markdown
 var cliReferenceHeader = `---
-layout: default
 title: lakectl (lakeFS command-line tool)
 description: lakeFS comes with its own native CLI client. Here you can see the complete command reference.
 parent: Reference
-nav_order: 20
-has_children: false
 redirect_from:
   - /reference/commands.html
+  - /quickstart/lakefs_cli.html
 ---
 
 {% comment %}
@@ -38,6 +36,13 @@ relevant Go files.
 
 [Download lakectl](https://github.com/treeverse/lakeFS/releases){: .btn .btn-green target="_blank"}
 
+Or using [Homebrew](https://brew.sh/) for Linux/macOS:
+
+` + "```" + `sh
+brew tap treeverse/lakefs
+brew install lakefs
+` + "```" + `
+
 ### Configuring credentials and API endpoint
 
 Once you've installed the lakectl command, run:
@@ -48,11 +53,11 @@ lakectl config
 # Config file /home/janedoe/.lakectl.yaml will be used
 # Access key ID: AKIAIOSFODNN7EXAMPLE
 # Secret access key: ****************************************
-# Server endpoint URL: http://localhost:8000/api/v1
+# Server endpoint URL: http://localhost:8000
 ` + "```" + `
 
 This will setup a ` + "`$HOME/.lakectl.yaml`" + ` file with the credentials and API endpoint you've supplied.
-When setting up a new installation and creating initial credentials (see [Quick start](../quickstart/index.md)), the UI
+When setting up a new installation and creating initial credentials (see [Quickstart]({{ site.baseurl }}/quickstart/)), the UI
 will provide a link to download a preconfigured configuration file for you.
 
 ` + "`lakectl`" + ` configuration items can each be controlled by an environment variable. The variable name will have a prefix of
@@ -79,6 +84,25 @@ the Docker container. That is to say, ` + "`localhost`" + ` to a Docker containe
 ## Command Reference
 `
 
+var cliReferenceHiddenCommandsSeparator = `
+-------
+
+## Undocumented commands
+
+**note:**
+⚠️ These commands are plumbing commands and for internal use only.
+Avoid using them unless you're _really_ sure you know what you're doing, or
+have been in contact with lakeFS support!
+{: .note .note-warning }
+
+`
+
+var cliReferenceHiddenCommandBanner = `**note:**
+lakeFS plumbing command. Don't use unless you're _really_ sure you know what you're doing.
+{: .note .note-warning }
+
+`
+
 func printOptions(buf *bytes.Buffer, cmd *cobra.Command) error {
 	flags := cmd.NonInheritedFlags()
 	flags.SetOutput(buf)
@@ -98,9 +122,11 @@ func printOptions(buf *bytes.Buffer, cmd *cobra.Command) error {
 	return nil
 }
 
-// this is a version of github.com/spf13/cobra/doc that fits better
-// into lakeFS' docs.
-func genMarkdownForCmd(cmd *cobra.Command, w io.Writer) error {
+// genMarkdownForCmd is a version of github.com/spf13/cobra/doc that fits
+// better into lakeFS' docs.  It generates documentation for cmd, then for
+// its subcommands.  topLevel adds a scarier header before those hidden
+// subcommands.
+func genMarkdownForCmd(cmd *cobra.Command, w io.Writer, topLevel bool) error {
 	cmd.InitDefaultHelpCmd()
 	cmd.InitDefaultHelpFlag()
 
@@ -110,7 +136,7 @@ func genMarkdownForCmd(cmd *cobra.Command, w io.Writer) error {
 	buf.WriteString("### " + name + "\n\n")
 
 	if cmd.Hidden {
-		buf.WriteString("**note:** This command is a lakeFS plumbing command. Don't use it unless you're really sure you know what you're doing.\n{: .note .note-warning }\n\n")
+		buf.WriteString(cliReferenceHiddenCommandBanner)
 	}
 
 	buf.WriteString(cmd.Short + "\n\n")
@@ -139,10 +165,36 @@ func genMarkdownForCmd(cmd *cobra.Command, w io.Writer) error {
 	}
 
 	// recurse to children
+	hasHidden := false
 	for _, c := range cmd.Commands() {
-		err := genMarkdownForCmd(c, w)
+		if c.Hidden {
+			hasHidden = true
+			continue
+		}
+		err := genMarkdownForCmd(c, w, false)
 		if err != nil {
 			return err
+		}
+	}
+
+	if hasHidden {
+		sep := "\n---------\n"
+		if topLevel {
+			sep = cliReferenceHiddenCommandsSeparator
+		}
+		_, err := io.WriteString(w, sep)
+		if err != nil {
+			return err
+		}
+
+		for _, c := range cmd.Commands() {
+			if !c.Hidden {
+				continue
+			}
+			err := genMarkdownForCmd(c, w, false)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -171,7 +223,7 @@ var docsCmd = &cobra.Command{
 		if err != nil {
 			DieErr(err)
 		}
-		err = genMarkdownForCmd(rootCmd, writer)
+		err = genMarkdownForCmd(rootCmd, writer, true)
 		if err != nil {
 			DieErr(err)
 		}

@@ -1,19 +1,19 @@
 ---
-layout: default
 title: Copying data to/from lakeFS
 description: 
 parent: How-To
-nav_order: 50
-has_children: false
 redirect_from: 
   - /integrations/distcp.html
   - /integrations/rclone.html
 ---
 
+# Copying data to/from lakeFS
+
+{% include toc.html %}
+
 ## Using DistCp
 
 Apache Hadoop [DistCp](https://hadoop.apache.org/docs/current/hadoop-distcp/DistCp.html){:target="_blank"} (distributed copy) is a tool used for large inter/intra-cluster copying. You can easily use it with your lakeFS repositories.
-{% include toc.html %}
 
 **Note** 
 
@@ -92,7 +92,7 @@ To add the remote to Rclone, choose one of the following options:
     cat <<EOT >> /home/myuser/.config/rclone/rclone.conf
     [lakefs]
     type = s3
-    provider = AWS
+    provider = Other
     endpoint = https://lakefs.example.com
 	no_check_bucket = true
     EOT
@@ -104,7 +104,7 @@ To add the remote to Rclone, choose one of the following options:
     cat <<EOT >> /home/myuser/.config/rclone/rclone.conf
     [lakefs]
     type = s3
-    provider = AWS
+    provider = Other
     env_auth = false
     access_key_id = AKIAIOSFODNN7EXAMPLE
     secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY

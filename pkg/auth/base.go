@@ -16,7 +16,7 @@ var (
 // without the required ARN.
 var statementByName = map[string]model.Statement{
 	"AllAccess": {
-		Action: []string{"fs:*", "auth:*", "ci:*", "retention:*", "branches:*"},
+		Action: []string{"fs:*", "auth:*", "ci:*", "retention:*", "branches:*", "pr:*"},
 		Effect: model.StatementEffectAllow,
 	},
 	"FSFullAccess": {
@@ -37,7 +37,6 @@ var statementByName = map[string]model.Statement{
 			permissions.DeleteBranchAction,
 			permissions.DeleteTagAction,
 			permissions.CreateCommitAction,
-			permissions.CreateMetaRangeAction,
 		},
 		Effect: model.StatementEffectAllow,
 	},
@@ -60,6 +59,8 @@ var statementByName = map[string]model.Statement{
 			"ci:Read*",
 			"retention:Get*",
 			"branches:Get*",
+			"pr:Read*",
+			"pr:List*",
 			permissions.ReadConfigAction,
 		},
 
@@ -71,6 +72,12 @@ var statementByName = map[string]model.Statement{
 			permissions.DeleteCredentialsAction,
 			permissions.ListCredentialsAction,
 			permissions.ReadCredentialsAction,
+		},
+		Effect: model.StatementEffectAllow,
+	},
+	"PRReadWrite": {
+		Action: []string{
+			"pr:*",
 		},
 		Effect: model.StatementEffectAllow,
 	},

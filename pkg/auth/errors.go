@@ -20,4 +20,6 @@ var (
 	ErrInvalidRequest          = errors.New("invalid request")
 	ErrUserNotFound            = errors.New("user not found")
 	ErrInvalidResponse         = errors.New("invalid response")
+	ErrNotImplemented          = errors.New("not implemented")
+	ErrMigrationNotPossible    = errors.New("auth migration not possible")
 )

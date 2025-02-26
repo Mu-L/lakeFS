@@ -1,16 +1,15 @@
 ---
-layout: default
-title: Airflow
+title: Apache Airflow
 description: Easily build reproducible data pipelines with Airflow and lakeFS using commits, without modifying the code or logic of your job.
 parent: Integrations
-nav_order: 40
-has_children: false
 redirect_from: /using/airflow.html
 ---
 
-# Using lakeFS with Airflow
+# Using lakeFS with Apache Airflow
 
 [Apache Airflow](https://airflow.apache.org/) is a platform that allows users to programmatically author, schedule, and monitor workflows.
+
+<iframe width="420" height="315" src="https://www.youtube.com/embed/HuQQUvmVjhU"></iframe>
 
 To run Airflow with lakeFS, you need to follow a few steps.
 
@@ -106,8 +105,8 @@ in the airflow-provider-lakeFS repository shows how to use all of these.
 
 Sometimes an operator might not be supported by airflow-provider-lakeFS yet. You can access lakeFS directly by using:
 
-- SimpleHttpOperator to send [API requests](../reference/api.md) to lakeFS. 
-- BashOperator with [lakectl](/reference/cli.html) commands.
+- SimpleHttpOperator to send [API requests]({% link reference/api.md %}) to lakeFS. 
+- BashOperator with [lakectl]({% link reference/cli.md %}) commands.
 For example, deleting a branch using BashOperator:
 ```bash
 commit_extract = BashOperator(

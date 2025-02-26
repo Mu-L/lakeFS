@@ -1,20 +1,13 @@
 ---
-layout: default
 title: AWS CLI
 description: This section shows how to use the AWS CLI for AWS S3 to access lakeFS.
 parent: Integrations
-nav_order: 30
-has_children: false
 redirect_from: /using/aws_cli.html
 ---
 
 # Using lakeFS with AWS CLI
 {: .no_toc}
-The [AWS Command Line Interface](https://aws.amazon.com/cli/) (CLI) is a unified tool for managing your AWS services.
-With just one tool to download and configure,
-you can control multiple AWS services from the command line and automate them through scripts.
-
-You can use the file commands for S3 to access lakeFS.
+lakeFS exposes an S3-compatible API, so you can use the [AWS S3 CLI](https://docs.aws.amazon.com/cli/latest/reference/s3/) to interact with objects in your repositories.
 {:.pb-5 }
 
 ## Table of contents
@@ -58,7 +51,7 @@ aws s3 --profile lakefs \
   ls s3://example-repo/main/example-directory
 ```
 
-You can use an [alias](aws_cli.md#adding-an-alias) to make it shorter and more convenient.
+You can use an [alias](aws_cli.html#adding-an-alias) to make it shorter and more convenient.
 
 ## Examples
 

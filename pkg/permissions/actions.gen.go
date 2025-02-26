@@ -5,6 +5,7 @@ package permissions
 var Actions = []string{
 	"fs:ReadRepository",
 	"fs:CreateRepository",
+	"fs:UpdateRepository",
 	"fs:AttachStorageNamespace",
 	"fs:ImportFromStorage",
 	"fs:ImportCancel",
@@ -15,7 +16,6 @@ var Actions = []string{
 	"fs:DeleteObject",
 	"fs:ListObjects",
 	"fs:CreateCommit",
-	"fs:CreateMetaRange",
 	"fs:ReadCommit",
 	"fs:ListCommits",
 	"fs:CreateBranch",
@@ -49,6 +49,9 @@ var Actions = []string{
 	"auth:CreateCredentials",
 	"auth:DeleteCredentials",
 	"auth:ListCredentials",
+	"auth:CreateUserExternalPrincipal",
+	"auth:DeleteUserExternalPrincipal",
+	"auth:ReadExternalPrincipal",
 	"ci:ReadAction",
 	"retention:PrepareGarbageCollectionCommits",
 	"retention:GetGarbageCollectionRules",
@@ -56,4 +59,7 @@ var Actions = []string{
 	"retention:PrepareGarbageCollectionUncommitted",
 	"branches:GetBranchProtectionRules",
 	"branches:SetBranchProtectionRules",
+	"pr:ReadPullRequest",
+	"pr:WritePullRequest",
+	"pr:ListPullRequests",
 }

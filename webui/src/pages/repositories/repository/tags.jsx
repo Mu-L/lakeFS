@@ -1,5 +1,5 @@
-import React, { useMemo, useRef, useState } from "react";
-
+import React, {useContext, useEffect, useMemo, useRef, useState} from "react";
+import { useOutletContext } from "react-router-dom";
 import {
     TagIcon,
     LinkIcon,
@@ -19,7 +19,6 @@ import {
     AlertError, LinkButton,
     Loading, PrefixSearchWidget, RefreshButton
 } from "../../../lib/components/controls";
-import { RepositoryPageLayout } from "../../../lib/components/repository/layout";
 import { useRefs } from "../../../lib/hooks/repo";
 import { useAPIWithPagination } from "../../../lib/hooks/api";
 import { Paginator } from "../../../lib/components/pagination";
@@ -31,16 +30,17 @@ import { useRouter } from "../../../lib/hooks/router";
 import {ConfirmationButton} from "../../../lib/components/modals";
 import Alert from "react-bootstrap/Alert";
 import {RepoError} from "./error";
+import {AppContext} from "../../../lib/hooks/appContext";
 
 
 const TagWidget = ({ repo, tag, onDelete }) => {
-
-    const buttonVariant = "outline-dark";
+    const {state} = useContext(AppContext);
+    const buttonVariant = state.settings.darkMode ? "outline-light" : "outline-dark";
 
     return (
         <ListGroup.Item>
             <div className="clearfix">
-                <div className="float-start">
+                <div className="float-start w-100">
                     <h6>
                         <Link href={{
                             pathname: '/repositories/:repoId/objects',
@@ -73,7 +73,7 @@ const TagWidget = ({ repo, tag, onDelete }) => {
                                 pathname: '/repositories/:repoId/commits/:commitId',
                                 params: { repoId: repo.id, commitId: tag.commit_id },
                             }}
-                            buttonVariant="outline-dark"
+                            buttonVariant={buttonVariant}
                             tooltip="View referenced commit">
                             {tag.commit_id.substr(0, 12)}
                         </LinkButton>
@@ -88,7 +88,7 @@ const TagWidget = ({ repo, tag, onDelete }) => {
 };
 
 
-const CreateTagButton = ({ repo, variant = "success", onCreate = null, children }) => {
+const CreateTagButton = ({ repo, variant = "success", onCreate = null, readOnly = false, children }) => {
     const [show, setShow] = useState(false);
     const [disabled, setDisabled] = useState(true);
     const [error, setError] = useState(null);
@@ -167,7 +167,7 @@ const CreateTagButton = ({ repo, variant = "success", onCreate = null, children 
                     </Button>
                 </Modal.Footer>
             </Modal>
-            <Button variant={variant} onClick={display}>{children}</Button>
+            <Button variant={variant} disabled={readOnly} onClick={display}>{children}</Button>
         </>
     );
 };
@@ -215,7 +215,7 @@ const TagList = ({ repo, after, prefix, onPaginate }) => {
 
                         <RefreshButton onClick={doRefresh} />
 
-                        <CreateTagButton repo={repo} variant="success" onCreate={doRefresh}>
+                        <CreateTagButton repo={repo} readOnly={repo?.read_only} variant="success" onCreate={doRefresh}>
                             <TagIcon /> Create Tag
                         </CreateTagButton>
 
@@ -223,7 +223,7 @@ const TagList = ({ repo, after, prefix, onPaginate }) => {
                 </ActionsBar>
                 {content}
                 <div className={"mt-2"}>
-                    A tag is an immutable pointer to a single commit. <a href="https://docs.lakefs.io/understand/object-model.html#identifying-commits" target="_blank" rel="noopener noreferrer">Learn more.</a>
+                    A tag is an immutable pointer to a single commit. <a href="https://docs.lakefs.io/understand/model.html#tags" target="_blank" rel="noopener noreferrer">Learn more.</a>
                 </div>
             </div>
         </>
@@ -255,11 +255,9 @@ const TagsContainer = () => {
 
 
 const RepositoryTagsPage = () => {
-    return (
-            <RepositoryPageLayout activePage={'tags'}>
-                <TagsContainer />
-            </RepositoryPageLayout>
-    )
+  const [setActivePage] = useOutletContext();
+  useEffect(() => setActivePage("tags"), [setActivePage]);
+  return <TagsContainer />;
 }
 
 export default RepositoryTagsPage;

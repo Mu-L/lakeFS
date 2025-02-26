@@ -8,10 +8,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/treeverse/lakefs/pkg/graveler/committed"
+
 	"github.com/go-openapi/swag"
 	"github.com/stretchr/testify/require"
 	"github.com/thanhpk/randstr"
-	"github.com/treeverse/lakefs/pkg/api"
+	"github.com/treeverse/lakefs/pkg/api/apigen"
 	"github.com/treeverse/lakefs/pkg/block"
 )
 
@@ -48,7 +50,7 @@ func TestPreSign(t *testing.T) {
 		t.Skipf("Only GS, S3 and Azure Blob supported for pre-signed urls. Got: %s", blockStoreType)
 	}
 
-	_, _ = uploadFileRandomData(ctx, t, repo, mainBranch, "foo/bar", false)
+	_, _ = UploadFileRandomData(ctx, t, repo, mainBranch, "foo/bar")
 
 	objContent := randstr.String(randomDataContentLength)
 	_, err = uploadFileAndReport(ctx, repo, mainBranch, "foo/bar", objContent, false)
@@ -57,7 +59,7 @@ func TestPreSign(t *testing.T) {
 	}
 
 	t.Run("preSignStat", func(t *testing.T) {
-		response, err := client.StatObjectWithResponse(ctx, repo, mainBranch, &api.StatObjectParams{
+		response, err := client.StatObjectWithResponse(ctx, repo, mainBranch, &apigen.StatObjectParams{
 			Path:    "foo/bar",
 			Presign: swag.Bool(true),
 		})
@@ -72,9 +74,9 @@ func TestPreSign(t *testing.T) {
 	})
 
 	t.Run("preSignList", func(t *testing.T) {
-		paginationDelimiter := api.PaginationDelimiter("/")
-		paginationPrefix := api.PaginationPrefix("foo/")
-		response, err := client.ListObjectsWithResponse(ctx, repo, mainBranch, &api.ListObjectsParams{
+		paginationDelimiter := apigen.PaginationDelimiter("/")
+		paginationPrefix := apigen.PaginationPrefix("foo/")
+		response, err := client.ListObjectsWithResponse(ctx, repo, mainBranch, &apigen.ListObjectsParams{
 			Prefix:    &paginationPrefix,
 			Presign:   swag.Bool(true),
 			Delimiter: &paginationDelimiter,
@@ -91,7 +93,7 @@ func TestPreSign(t *testing.T) {
 	})
 
 	t.Run("preSignGet", func(t *testing.T) {
-		response, err := client.GetObjectWithResponse(ctx, repo, mainBranch, &api.GetObjectParams{
+		response, err := client.GetObjectWithResponse(ctx, repo, mainBranch, &apigen.GetObjectParams{
 			Path:    "foo/bar",
 			Presign: swag.Bool(true),
 		})
@@ -103,9 +105,64 @@ func TestPreSign(t *testing.T) {
 		require.NotEqual(t, endpointParsedURL.Host, responseHost, "Should have been redirected to the object store")
 	})
 
+	t.Run("preSignGetMetaRangeAndRange", func(t *testing.T) {
+		// get a metarange from main
+		UploadFileRandomData(ctx, t, repo, mainBranch, "some/random/path/43543985430548930")
+		commitResp, err := client.CommitWithResponse(ctx, repo, mainBranch, &apigen.CommitParams{}, apigen.CommitJSONRequestBody{
+			Message: "committing just to get a meta range!",
+		})
+		require.NoError(t, err, "failed to commit changes")
+		metarangeId := commitResp.JSON201.MetaRangeId
+
+		response, err := client.GetMetadataObjectWithResponse(ctx, repo, "meta_range", metarangeId, &apigen.GetMetadataObjectParams{
+			Presign: swag.Bool(true),
+		})
+		require.NoError(t, err, "failed to download meta range with presign=true")
+
+		responseHost := response.HTTPResponse.Header.Get("Host")
+		endpointParsedURL, err := url.Parse(endpointURL)
+		require.NoError(t, err, "failed to parse the endpoint URL used by esti")
+		require.NotEqual(t, endpointParsedURL.Host, responseHost, "Should have been redirected to the object store")
+
+		// try reading the meta-range
+		iter, err := gravelerIterator(response.Body)
+		if err != nil {
+			t.Error("could not get an iterator from meta-range body")
+		}
+		if !iter.Next() {
+			t.Error("should have at least one range")
+		}
+		record := iter.Value()
+		gv, err := committed.UnmarshalValue(record.Value)
+		if err != nil {
+			t.Error("could not read range data")
+		}
+		rangeId := committed.ID(gv.Identity)
+
+		// now try the range ID
+		response, err = client.GetMetadataObjectWithResponse(ctx, repo, "range", string(rangeId), &apigen.GetMetadataObjectParams{
+			Presign: swag.Bool(true),
+		})
+		require.NoError(t, err, "failed to get range with presign=true")
+
+		responseHost = response.HTTPResponse.Header.Get("Host")
+		endpointParsedURL, err = url.Parse(endpointURL)
+		require.NoError(t, err, "failed to parse the endpoint URL used by esti")
+		require.NotEqual(t, endpointParsedURL.Host, responseHost, "Should have been redirected to the object store")
+
+		// try reading the range
+		iter, err = gravelerIterator(response.Body)
+		if err != nil {
+			t.Error("could not get an iterator from range body")
+		}
+		if !iter.Next() {
+			t.Error("should have at least one record")
+		}
+	})
+
 	t.Run("preSignGetPhysicalAddress", func(t *testing.T) {
 		// request a pre-signed URL for us to upload to
-		response, err := client.GetPhysicalAddressWithResponse(ctx, repo, mainBranch, &api.GetPhysicalAddressParams{
+		response, err := client.GetPhysicalAddressWithResponse(ctx, repo, mainBranch, &apigen.GetPhysicalAddressParams{
 			Path:    "foo/uploaded",
 			Presign: swag.Bool(true),
 		})
@@ -126,23 +183,22 @@ func TestPreSign(t *testing.T) {
 		require.Truef(t, httpResp.StatusCode < 400, "got a bad response from pre-signed URL for PUT: %s", httpResp.Status)
 
 		// Let's link this physical address
-		linkResponse, err := client.LinkPhysicalAddressWithResponse(ctx, repo, mainBranch, &api.LinkPhysicalAddressParams{
+		linkResponse, err := client.LinkPhysicalAddressWithResponse(ctx, repo, mainBranch, &apigen.LinkPhysicalAddressParams{
 			Path: "foo/uploaded",
-		}, api.LinkPhysicalAddressJSONRequestBody{
+		}, apigen.LinkPhysicalAddressJSONRequestBody{
 			Checksum:    httpResp.Header.Get("Etag"),
 			ContentType: swag.String("application/octet-stream"),
 			SizeBytes:   int64(uploadContentLength),
-			Staging: api.StagingLocation{
+			Staging: apigen.StagingLocation{
 				PhysicalAddress: response.JSON200.PhysicalAddress,
 				PresignedUrl:    response.JSON200.PresignedUrl,
-				Token:           response.JSON200.Token,
 			},
 		})
 		require.NoError(t, err, "failed to link physical address")
 		require.Equalf(t, linkResponse.StatusCode(), http.StatusOK, "unexpected HTTP code for link_physical_address: %s", linkResponse.Status())
 
 		// Finally, let's read it back and see that we get back what we uploaded!
-		readBackResponse, err := client.GetObjectWithResponse(ctx, repo, mainBranch, &api.GetObjectParams{
+		readBackResponse, err := client.GetObjectWithResponse(ctx, repo, mainBranch, &apigen.GetObjectParams{
 			Path: "foo/uploaded",
 		})
 		require.NoError(t, err, "failed to read back linked object")

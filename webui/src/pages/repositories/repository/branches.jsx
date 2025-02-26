@@ -1,5 +1,5 @@
-import React, {useMemo, useRef, useState} from "react";
-
+import React, {useContext, useEffect, useMemo, useRef, useState} from "react";
+import { useOutletContext } from "react-router-dom";
 import {
     GitBranchIcon,
     LinkIcon,
@@ -19,7 +19,6 @@ import {
     AlertError, LinkButton,
     Loading, PrefixSearchWidget, RefreshButton
 } from "../../../lib/components/controls";
-import {RepositoryPageLayout} from "../../../lib/components/repository/layout";
 import {useRefs} from "../../../lib/hooks/repo";
 import {useAPIWithPagination} from "../../../lib/hooks/api";
 import {Paginator} from "../../../lib/components/pagination";
@@ -32,13 +31,15 @@ import Alert from "react-bootstrap/Alert";
 import {Link} from "../../../lib/components/nav";
 import {useRouter} from "../../../lib/hooks/router";
 import {RepoError} from "./error";
+import { Col, Row } from "react-bootstrap";
+import {AppContext} from "../../../lib/hooks/appContext";
 
 const ImportBranchName = 'import-from-inventory';
 
 
 const BranchWidget = ({ repo, branch, onDelete }) => {
-
-    const buttonVariant = "outline-dark";
+    const {state} = useContext(AppContext);
+    const buttonVariant = state.settings.darkMode ? "outline-light" : "outline-dark";
     const isDefault = repo.default_branch === branch.id;
     let deleteMsg = (
         <>
@@ -56,9 +57,9 @@ const BranchWidget = ({ repo, branch, onDelete }) => {
 
     return (
         <ListGroup.Item>
-            <div className="clearfix">
-                <div className="float-start">
-                    <h6>
+            <Row className="d-flex align-items-center justify-content-between">
+                <Col className="flex-grow-1">
+                    <h6 style={{marginBottom: 0}}>
                         <Link href={{
                             pathname: '/repositories/:repoId/objects',
                             params: {repoId: repo.id},
@@ -66,17 +67,18 @@ const BranchWidget = ({ repo, branch, onDelete }) => {
                         }}>
                             {branch.id}
                         </Link>
-
+                        
                         {isDefault &&
-                        <>
-                            {' '}
-                            <Badge variant="info">Default</Badge>
-                        </>}
+                            <>
+                                {' '}
+                                <Badge variant="info">Default</Badge>
+                            </>
+                        }     
                     </h6>
-                </div>
+                </Col>
 
 
-                <div className="float-end">
+                <Col md="3" className="d-flex justify-content-end">
                     {!isDefault &&
                     <ButtonGroup className="commit-actions">
                         <ConfirmationButton
@@ -101,7 +103,7 @@ const BranchWidget = ({ repo, branch, onDelete }) => {
                                 pathname: '/repositories/:repoId/commits/:commitId',
                                 params:{repoId: repo.id, commitId: branch.commit_id},
                             }}
-                            buttonVariant="outline-dark"
+                            buttonVariant={buttonVariant}
                             tooltip="View referenced commit">
                             {branch.commit_id.substr(0, 12)}
                         </LinkButton>
@@ -109,14 +111,14 @@ const BranchWidget = ({ repo, branch, onDelete }) => {
                         <ClipboardButton variant={buttonVariant} text={`lakefs://${repo.id}/${branch.id}`} tooltip="Copy URI to clipboard" icon={<LinkIcon/>}/>
                         <ClipboardButton variant={buttonVariant} text={`s3://${repo.id}/${branch.id}`} tooltip="Copy S3 URI to clipboard" icon={<PackageIcon/>}/>
                     </ButtonGroup>
-                </div>
-            </div>
+                </Col>
+            </Row>
         </ListGroup.Item>
     );
 };
 
 
-const CreateBranchButton = ({ repo, variant = "success", onCreate = null, children }) => {
+const CreateBranchButton = ({ repo, variant = "success", onCreate = null, readOnly = false, children }) => {
     const [show, setShow] = useState(false);
     const [disabled, setDisabled] = useState(false);
     const [error, setError] = useState(null);
@@ -193,7 +195,7 @@ const CreateBranchButton = ({ repo, variant = "success", onCreate = null, childr
                     </Button>
                 </Modal.Footer>
             </Modal>
-            <Button variant={variant} onClick={display}>{children}</Button>
+            <Button variant={variant} disabled={readOnly} onClick={display}>{children}</Button>
         </>
     );
 };
@@ -240,7 +242,7 @@ const BranchList = ({ repo, prefix, after, onPaginate }) => {
 
                     <RefreshButton onClick={doRefresh}/>
 
-                    <CreateBranchButton repo={repo} variant="success" onCreate={doRefresh}>
+                    <CreateBranchButton repo={repo} readOnly={repo?.read_only} variant="success" onCreate={doRefresh}>
                         <GitBranchIcon/> Create Branch
                     </CreateBranchButton>
 
@@ -278,11 +280,9 @@ const BranchesContainer = () => {
 
 
 const RepositoryBranchesPage = () => {
-    return (
-            <RepositoryPageLayout activePage={'branches'}>
-                <BranchesContainer/>
-            </RepositoryPageLayout>
-    )
+  const [setActivePage] = useOutletContext();
+  useEffect(() => setActivePage("branches"), [setActivePage]);
+  return <BranchesContainer />;
 }
 
 export default RepositoryBranchesPage;

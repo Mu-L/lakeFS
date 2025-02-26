@@ -18,7 +18,7 @@ import (
 )
 
 func TestGarbageCollectionManager_GetUncommittedLocation(t *testing.T) {
-	blockAdapter := mem.New()
+	blockAdapter := mem.New(context.Background())
 	refMgr := &testutil.RefsFake{}
 	const prefix = "test_prefix"
 	const runID = "my_test_runID"
@@ -34,7 +34,7 @@ func createTestFile(t *testing.T, filename, testLine string, count int) {
 	t.Helper()
 	fd, err := os.Create(filename)
 	require.NoError(t, err)
-	defer fd.Close()
+	defer func() { _ = fd.Close() }()
 	for i := 0; i < count; i++ {
 		_, err := fd.WriteString(fmt.Sprintf("%s_%d\n", testLine, i))
 		require.NoError(t, err)
@@ -43,7 +43,7 @@ func createTestFile(t *testing.T, filename, testLine string, count int) {
 
 func TestGarbageCollectionManager_SaveGarbageCollectionUncommitted(t *testing.T) {
 	ctx := context.Background()
-	blockAdapter := mem.New()
+	blockAdapter := mem.New(context.Background())
 	refMgr := &testutil.RefsFake{}
 	const prefix = "test_prefix"
 	const runID = "my_test_runID"
@@ -70,10 +70,11 @@ func TestGarbageCollectionManager_SaveGarbageCollectionUncommitted(t *testing.T)
 	err = gc.SaveGarbageCollectionUncommitted(ctx, &repositoryRec, filename, runID)
 	require.NoError(t, err)
 	reader, err := blockAdapter.Get(ctx, block.ObjectPointer{
+		StorageID:        "",
 		StorageNamespace: "",
 		Identifier:       fmt.Sprintf("%s%s", location, filename),
 		IdentifierType:   block.IdentifierTypeFull,
-	}, 0)
+	})
 	require.NoError(t, err)
 	fileScanner := bufio.NewScanner(reader)
 	line := 0

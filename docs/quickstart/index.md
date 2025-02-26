@@ -1,5 +1,5 @@
 ---
-title: ⭐ Quickstart ⭐
+title: ⭐ Quickstart
 description: A hands-on quickstart for lakeFS that introduces key concepts including branching, merging, and rollback. 
 nav_order: 1
 has_children: true
@@ -18,7 +18,7 @@ redirect_from:
 
 # lakeFS Quickstart
 
-**Welcome to lakeFS 👋🏻**
+**Welcome to lakeFS!**
 
 lakeFS provides a "Git for data" platform enabling you to implement best practices from software engineering on your data lake, including branching and merging, CI/CD, and production-like dev/test environments. 
 
@@ -29,7 +29,7 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 
 <div class="row">
 <div class="col step-num">
-<img src="/assets/img/quickstart/quickstart-step-01.png" alt="step 1"/>
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-01.png" alt="step 1"/>
 </div>
 <div class="col">
 <h3>
@@ -41,7 +41,7 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 
 <div class="row">
 <div class="col step-num">
-<img src="/assets/img/quickstart/quickstart-step-02.png" alt="step 2"/>
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-02.png" alt="step 2"/>
 </div>
 <div class="col">
 <h3>
@@ -53,7 +53,7 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 
 <div class="row">
 <div class="col step-num">
-<img src="/assets/img/quickstart/quickstart-step-03.png" alt="step 3"/>
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-03.png" alt="step 3"/>
 </div>
 <div class="col">
 <h3>
@@ -65,7 +65,7 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 
 <div class="row">
 <div class="col step-num">
-<img src="/assets/img/quickstart/quickstart-step-04.png" alt="step 4"/>
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-04.png" alt="step 4"/>
 </div>
 <div class="col">
 <h3>
@@ -77,7 +77,7 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 
 <div class="row">
 <div class="col step-num">
-<img src="/assets/img/quickstart/quickstart-step-05.png" alt="step 5"/>
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-05.png" alt="step 5"/>
 </div>
 <div class="col">
 <h3>
@@ -87,3 +87,33 @@ This quickstart will introduce you to some of the core ideas in lakeFS and show 
 </div>
 </div>
 </div>
+
+<div class="row">
+<div class="col step-num">
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-06.png" alt="step 6"/>
+</div>
+<div class="col">
+<h3>
+<a href="actions-and-hooks.html">Actions</a>
+</h3>
+<p>Use Actions to trigger code when an event occurs</p>
+</div>
+</div>
+
+<div class="row">
+<div class="col step-num">
+<img src="{{ site.baseurl }}/assets/img/quickstart/quickstart-step-07.png" alt="step 6"/>
+</div>
+<div class="col">
+<h3>
+<a href="work-with-data-locally.html">Work Locally</a>
+</h3>
+<p>Experiment with lakeFS data on a local environment</p>
+</div>
+</div>
+
+{: .note}
+You can use the [30-day free trial of lakeFS Cloud](https://lakefs.cloud/register) if you want to try out lakeFS without installing anything. 
+
+<iframe width="420" height="315" src="https://www.youtube.com/embed/R1r023CsTOw"></iframe>
+

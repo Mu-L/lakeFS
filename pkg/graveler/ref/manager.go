@@ -4,33 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/rs/xid"
 	"github.com/treeverse/lakefs/pkg/batch"
 	"github.com/treeverse/lakefs/pkg/cache"
+	"github.com/treeverse/lakefs/pkg/distributed"
 	"github.com/treeverse/lakefs/pkg/graveler"
+	"github.com/treeverse/lakefs/pkg/httputil"
 	"github.com/treeverse/lakefs/pkg/ident"
 	"github.com/treeverse/lakefs/pkg/kv"
 	"github.com/treeverse/lakefs/pkg/logging"
 )
 
 const (
-	// MaxBatchDelay - 3ms was chosen as a max delay time for critical path queries.
-	// It trades off amount of queries per second (and thus effectiveness of the batching mechanism) with added latency.
-	// Since reducing # of expensive operations is only beneficial when there are a lot of concurrent requests,
-	//
-	//	the sweet spot is probably between 1-5 milliseconds (representing 200-1000 requests/second to the data store).
-	//
-	// 3ms of delay with ~300 requests/second per resource sounds like a reasonable tradeoff.
-	MaxBatchDelay = 3 * time.Millisecond
 	// commitIDStringLength string representation length of commit ID - based on hex representation of sha256
 	commitIDStringLength = 64
-	// LinkAddressTime the time address is valid from get to link
-	LinkAddressTime = 6 * time.Hour
 	// ImportExpiryTime Expiry time to remove imports from ref-store
 	ImportExpiryTime = 24 * time.Hour
 )
@@ -48,6 +38,8 @@ type Manager struct {
 	batchExecutor   batch.Batcher
 	repoCache       cache.Cache
 	commitCache     cache.Cache
+	maxBatchDelay   time.Duration
+	branchOwnership *distributed.MostlyCorrectOwner
 }
 
 func branchFromProto(pb *graveler.BranchData) *graveler.Branch {
@@ -59,6 +51,7 @@ func branchFromProto(pb *graveler.BranchData) *graveler.Branch {
 		CommitID:     graveler.CommitID(pb.CommitId),
 		StagingToken: graveler.StagingToken(pb.StagingToken),
 		SealedTokens: sealedTokens,
+		Hidden:       pb.Hidden,
 	}
 	return branch
 }
@@ -73,20 +66,61 @@ func protoFromBranch(branchID graveler.BranchID, b *graveler.Branch) *graveler.B
 		CommitId:     b.CommitID.String(),
 		StagingToken: b.StagingToken.String(),
 		SealedTokens: sealedTokens,
+		Hidden:       b.Hidden,
 	}
 	return branch
 }
 
+// BranchApproximateOwnershipParams configures mostly-correct ownership of
+// branches.  Branch correctness is safe _regardless_ of the values of these
+// parameters.  They exist solely to reduce expensive operations when
+// multiple concurrent updates race on the same branch.  Only one update can
+// win a race.  Approximately correct ownership means others will generally
+// back off and let that one update proceed.
+type BranchApproximateOwnershipParams struct {
+	// AcquireInterval is the interval at which to attempt to acquire
+	// ownership of a branch.  It is a bound on the latency of the time
+	// for one worker to acquire a branch when multiple operations race
+	// on that branch.  Reducing it increases read load on the branch
+	// ownership record when concurrent operations occur.
+	AcquireInterval time.Duration
+	// RefreshInterval the interval for which to assert ownership of a
+	// branch.  It is a bound on the time to perform an operation on a
+	// branch IF a previous worker crashed while owning that branch.  It
+	// has no effect when there are no crashes.  Reducing it increases
+	// write load on the branch ownership record when concurrent
+	// operations occur.
+	//
+	// If zero or negative, ownership will not be asserted and branch
+	// operations will race.  This is safe but can be slow.
+	RefreshInterval time.Duration
+}
+
 type ManagerConfig struct {
-	Executor              batch.Batcher
-	KVStore               kv.Store
-	KVStoreLimited        kv.Store
-	AddressProvider       ident.AddressProvider
-	RepositoryCacheConfig CacheConfig
-	CommitCacheConfig     CacheConfig
+	Executor                         batch.Batcher
+	KVStore                          kv.Store
+	KVStoreLimited                   kv.Store
+	AddressProvider                  ident.AddressProvider
+	RepositoryCacheConfig            CacheConfig
+	CommitCacheConfig                CacheConfig
+	MaxBatchDelay                    time.Duration
+	BranchApproximateOwnershipParams BranchApproximateOwnershipParams
 }
 
 func NewRefManager(cfg ManagerConfig) *Manager {
+	var branchOwnership *distributed.MostlyCorrectOwner
+	if cfg.BranchApproximateOwnershipParams.RefreshInterval > 0 {
+		log := logging.ContextUnavailable().WithField("component", "RefManager approximate branch ownership")
+		branchOwnership = distributed.NewMostlyCorrectOwner(
+			log,
+			cfg.KVStore,
+			"run-refs/approximate-branch-owner",
+			cfg.BranchApproximateOwnershipParams.AcquireInterval,
+			cfg.BranchApproximateOwnershipParams.RefreshInterval,
+		)
+		log.Info("Initialized")
+	}
+
 	return &Manager{
 		kvStore:         cfg.KVStore,
 		kvStoreLimited:  cfg.KVStoreLimited,
@@ -94,6 +128,8 @@ func NewRefManager(cfg ManagerConfig) *Manager {
 		batchExecutor:   cfg.Executor,
 		repoCache:       newCache(cfg.RepositoryCacheConfig),
 		commitCache:     newCache(cfg.CommitCacheConfig),
+		maxBatchDelay:   cfg.MaxBatchDelay,
+		branchOwnership: branchOwnership,
 	}
 }
 
@@ -111,7 +147,7 @@ func (m *Manager) getRepository(ctx context.Context, repositoryID graveler.Repos
 
 func (m *Manager) getRepositoryBatch(ctx context.Context, repositoryID graveler.RepositoryID) (*graveler.RepositoryRecord, error) {
 	key := fmt.Sprintf("GetRepository:%s", repositoryID)
-	repository, err := m.batchExecutor.BatchFor(ctx, key, MaxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+	repository, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
 		return m.getRepository(context.Background(), repositoryID)
 	}))
 	if err != nil {
@@ -156,6 +192,7 @@ func (m *Manager) createBareRepository(ctx context.Context, repositoryID gravele
 		}
 		return nil, err
 	}
+
 	return repoRecord, nil
 }
 
@@ -204,7 +241,7 @@ func (m *Manager) updateRepoState(ctx context.Context, repo *graveler.Repository
 }
 
 func (m *Manager) deleteRepositoryBranches(ctx context.Context, repository *graveler.RepositoryRecord) error {
-	itr, err := m.ListBranches(ctx, repository)
+	itr, err := m.ListBranches(ctx, repository, graveler.ListOptions{ShowHidden: true})
 	if err != nil {
 		return err
 	}
@@ -251,6 +288,10 @@ func (m *Manager) deleteRepositoryCommits(ctx context.Context, repository *grave
 	return wg.Wait().ErrorOrNil()
 }
 
+func (m *Manager) deleteRepositoryMetadata(ctx context.Context, repository *graveler.RepositoryRecord) error {
+	return m.kvStore.Delete(ctx, []byte(graveler.RepoPartition(repository)), []byte(graveler.RepoMetadataPath()))
+}
+
 func (m *Manager) deleteRepository(ctx context.Context, repo *graveler.RepositoryRecord) error {
 	// ctx := context.Background() TODO (niro): When running this async create a new context and remove ctx from signature
 	var wg multierror.Group
@@ -263,6 +304,9 @@ func (m *Manager) deleteRepository(ctx context.Context, repo *graveler.Repositor
 	wg.Go(func() error {
 		return m.deleteRepositoryCommits(ctx, repo)
 	})
+	wg.Go(func() error {
+		return m.deleteRepositoryMetadata(ctx, repo)
+	})
 
 	if err := wg.Wait().ErrorOrNil(); err != nil {
 		return err
@@ -272,10 +316,18 @@ func (m *Manager) deleteRepository(ctx context.Context, repo *graveler.Repositor
 	return m.kvStore.Delete(ctx, []byte(graveler.RepositoriesPartition()), []byte(graveler.RepoPath(repo.RepositoryID)))
 }
 
-func (m *Manager) DeleteRepository(ctx context.Context, repositoryID graveler.RepositoryID) error {
+func (m *Manager) DeleteRepository(ctx context.Context, repositoryID graveler.RepositoryID, opts ...graveler.SetOptionsFunc) error {
 	repo, err := m.getRepository(ctx, repositoryID)
 	if err != nil {
 		return err
+	}
+
+	options := &graveler.SetOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+	if repo.ReadOnly && !options.Force {
+		return graveler.ErrReadOnlyRepository
 	}
 
 	// Set repository state to deleted and then perform background delete.
@@ -288,6 +340,49 @@ func (m *Manager) DeleteRepository(ctx context.Context, repositoryID graveler.Re
 
 	// TODO(niro): This should be a background delete process
 	return m.deleteRepository(ctx, repo)
+}
+
+func (m *Manager) getRepositoryMetadata(ctx context.Context, repo *graveler.RepositoryRecord) (graveler.RepositoryMetadata, kv.Predicate, error) {
+	data := graveler.RepoMetadata{}
+	pred, err := kv.GetMsg(ctx, m.kvStore, graveler.RepoPartition(repo), []byte(graveler.RepoMetadataPath()), &data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return graveler.RepoMetadataFromProto(&data), pred, nil
+}
+
+func (m *Manager) GetRepositoryMetadata(ctx context.Context, repositoryID graveler.RepositoryID) (graveler.RepositoryMetadata, error) {
+	repo, err := m.getRepository(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+
+	metadata, _, err := m.getRepositoryMetadata(ctx, repo)
+	if errors.Is(err, kv.ErrNotFound) { // Return nil map if not exists
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return metadata, nil
+}
+
+func (m *Manager) SetRepositoryMetadata(ctx context.Context, repo *graveler.RepositoryRecord, updateFunc graveler.RepoMetadataUpdateFunc) error {
+	metadata, pred, err := m.getRepositoryMetadata(ctx, repo)
+	if errors.Is(err, kv.ErrNotFound) { // Create new metadata map and set predicate to nil for setIf not exists
+		metadata = graveler.RepositoryMetadata{}
+		pred = nil
+	} else if err != nil {
+		return err
+	}
+
+	newMetadata, err := updateFunc(metadata)
+	// return on error or nothing to update
+	if err != nil || newMetadata == nil {
+		return err
+	}
+	return kv.SetMsgIf(ctx, m.kvStore, graveler.RepoPartition(repo), []byte(graveler.RepoMetadataPath()), graveler.ProtoFromRepositoryMetadata(newMetadata), pred)
 }
 
 func (m *Manager) ParseRef(ref graveler.Ref) (graveler.RawRef, error) {
@@ -304,7 +399,7 @@ func (m *Manager) getBranchWithPredicate(ctx context.Context, repository *gravel
 		*graveler.Branch
 		kv.Predicate
 	}
-	result, err := m.batchExecutor.BatchFor(ctx, key, MaxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+	result, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
 		key := graveler.BranchPath(branchID)
 		data := graveler.BranchData{}
 		pred, err := kv.GetMsg(context.Background(), m.kvStore, graveler.RepoPartition(repository), []byte(key), &data)
@@ -345,6 +440,23 @@ func (m *Manager) SetBranch(ctx context.Context, repository *graveler.Repository
 }
 
 func (m *Manager) BranchUpdate(ctx context.Context, repository *graveler.RepositoryRecord, branchID graveler.BranchID, f graveler.BranchUpdateFunc) error {
+	// TODO(ariels): Get request ID in a nicer way.
+	requestIDPtr := httputil.RequestIDFromContext(ctx)
+	// Grab ownership if configured.  Also check we actually have a
+	// request-ID on the request.  (lakeFS middleware should *always*
+	// place a request ID anyways.)
+	if m.branchOwnership != nil && requestIDPtr != nil {
+		requestID := *requestIDPtr
+		release, err := m.branchOwnership.Own(ctx, requestID, string(branchID))
+		if err != nil {
+			logging.FromContext(ctx).
+				WithFields(logging.Fields{}).
+				WithError(err).
+				Warn("Failed to get ownership on branch; continuing but may be slow")
+		} else {
+			defer release()
+		}
+	}
 	b, pred, err := m.getBranchWithPredicate(ctx, repository, branchID)
 	if err != nil {
 		return err
@@ -365,17 +477,17 @@ func (m *Manager) DeleteBranch(ctx context.Context, repository *graveler.Reposit
 	return m.kvStore.Delete(ctx, []byte(graveler.RepoPartition(repository)), []byte(graveler.BranchPath(branchID)))
 }
 
-func (m *Manager) ListBranches(ctx context.Context, repository *graveler.RepositoryRecord) (graveler.BranchIterator, error) {
-	return NewBranchSimpleIterator(ctx, m.kvStore, repository)
+func (m *Manager) ListBranches(ctx context.Context, repository *graveler.RepositoryRecord, opts graveler.ListOptions) (graveler.BranchIterator, error) {
+	return NewBranchSimpleIterator(ctx, m.kvStore, repository, opts)
 }
 
 func (m *Manager) GCBranchIterator(ctx context.Context, repository *graveler.RepositoryRecord) (graveler.BranchIterator, error) {
-	return NewBranchByCommitIterator(ctx, m.kvStore, repository)
+	return NewBranchByCommitIterator(ctx, m.kvStore, repository, graveler.ListOptions{ShowHidden: true})
 }
 
 func (m *Manager) GetTag(ctx context.Context, repository *graveler.RepositoryRecord, tagID graveler.TagID) (*graveler.CommitID, error) {
 	key := fmt.Sprintf("GetTag:%s:%s", repository.RepositoryID, tagID)
-	commitID, err := m.batchExecutor.BatchFor(ctx, key, MaxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+	commitID, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
 		tagKey := graveler.TagPath(tagID)
 		t := graveler.TagData{}
 		_, err := kv.GetMsg(context.Background(), m.kvStore, graveler.RepoPartition(repository), []byte(tagKey), &t)
@@ -426,7 +538,7 @@ func (m *Manager) GetCommitByPrefix(ctx context.Context, repository *graveler.Re
 		return m.GetCommit(ctx, repository, prefix)
 	}
 	key := fmt.Sprintf("GetCommitByPrefix:%s:%s", repository.RepositoryID, prefix)
-	commit, err := m.batchExecutor.BatchFor(ctx, key, MaxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+	commit, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
 		it, err := NewOrderedCommitIterator(context.Background(), m.kvStore, repository, false)
 		if err != nil {
 			return nil, err
@@ -472,7 +584,7 @@ func (m *Manager) GetCommit(ctx context.Context, repository *graveler.Repository
 
 func (m *Manager) getCommitBatch(ctx context.Context, repository *graveler.RepositoryRecord, commitID graveler.CommitID) (*graveler.Commit, error) {
 	key := fmt.Sprintf("GetCommit:%s:%s", repository.RepositoryID, commitID)
-	commit, err := m.batchExecutor.BatchFor(ctx, key, MaxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+	commit, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
 		return m.getCommit(context.Background(), commitID, repository)
 	}))
 	if err != nil {
@@ -511,6 +623,21 @@ func (m *Manager) AddCommit(ctx context.Context, repository *graveler.Repository
 	return m.addCommit(ctx, graveler.RepoPartition(repository), commit)
 }
 
+func (m *Manager) CreateCommitRecord(ctx context.Context, repository *graveler.RepositoryRecord, commitID graveler.CommitID, commit graveler.Commit) error {
+	if m.addressProvider.ContentAddress(commit) != commitID.String() {
+		return graveler.ErrInvalidCommitID
+	}
+	c := graveler.ProtoFromCommit(commitID, &commit)
+	commitKey := graveler.CommitPath(commitID)
+	err := kv.SetMsgIf(ctx, m.kvStore, graveler.RepoPartition(repository), []byte(commitKey), c, nil)
+	if errors.Is(err, kv.ErrPredicateFailed) {
+		return graveler.ErrCommitAlreadyExists
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) RemoveCommit(ctx context.Context, repository *graveler.RepositoryRecord, commitID graveler.CommitID) error {
 	commitKey := graveler.CommitPath(commitID)
 	return m.kvStore.Delete(ctx, []byte(graveler.RepoPartition(repository)), []byte(commitKey))
@@ -524,11 +651,12 @@ func (m *Manager) FindMergeBase(ctx context.Context, repository *graveler.Reposi
 	return FindMergeBase(ctx, m, repository, commitIDs[0], commitIDs[1])
 }
 
-func (m *Manager) Log(ctx context.Context, repository *graveler.RepositoryRecord, from graveler.CommitID, firstParent bool) (graveler.CommitIterator, error) {
+func (m *Manager) Log(ctx context.Context, repository *graveler.RepositoryRecord, from graveler.CommitID, firstParent bool, since *time.Time) (graveler.CommitIterator, error) {
 	return NewCommitIterator(ctx, &CommitIteratorConfig{
 		repository:  repository,
 		start:       from,
 		firstParent: firstParent,
+		since:       since,
 		manager:     m,
 	}), nil
 }
@@ -546,91 +674,6 @@ func newCache(cfg CacheConfig) cache.Cache {
 		return cache.NoCache
 	}
 	return cache.NewCache(cfg.Size, cfg.Expiry, cache.NewJitterFn(cfg.Jitter))
-}
-
-func (m *Manager) SetLinkAddress(ctx context.Context, repository *graveler.RepositoryRecord, token string) error {
-	a := &graveler.LinkAddressData{
-		Address: token,
-	}
-	err := kv.SetMsgIf(ctx, m.kvStore, graveler.RepoPartition(repository), []byte(graveler.LinkedAddressPath(token)), a, nil)
-	if err != nil {
-		if errors.Is(err, kv.ErrPredicateFailed) {
-			err = graveler.ErrAddressTokenAlreadyExists
-		}
-		return err
-	}
-	return nil
-}
-
-func (m *Manager) VerifyLinkAddress(ctx context.Context, repository *graveler.RepositoryRecord, token string) error {
-	data := graveler.LinkAddressData{}
-	addrPath := []byte(graveler.LinkedAddressPath(token))
-	_, err := kv.GetMsg(ctx, m.kvStore, graveler.RepoPartition(repository), addrPath, &data)
-	if err != nil {
-		if errors.Is(err, kv.ErrNotFound) {
-			err = graveler.ErrAddressTokenNotFound
-		}
-		return err
-	}
-	expired, err := m.IsLinkAddressExpired(&data)
-	if err != nil {
-		return err
-	}
-	if expired {
-		err = graveler.ErrAddressTokenExpired
-	}
-	_ = deleteLinkAddress(ctx, m.kvStore, repository, token)
-	return err
-}
-
-func deleteLinkAddress(ctx context.Context, kvStore kv.Store, repository *graveler.RepositoryRecord, token string) error {
-	addrPath := []byte(graveler.LinkedAddressPath(token))
-	return kvStore.Delete(ctx, []byte(graveler.RepoPartition(repository)), addrPath)
-}
-
-func (m *Manager) ListLinkAddresses(ctx context.Context, repository *graveler.RepositoryRecord) (graveler.AddressTokenIterator, error) {
-	return NewAddressTokenIterator(ctx, m.kvStore, repository)
-}
-
-func (m *Manager) IsLinkAddressExpired(token *graveler.LinkAddressData) (bool, error) {
-	creationTime, err := m.resolveLinkAddressTime(token.Address)
-	if err != nil {
-		return false, err
-	}
-	return time.Since(creationTime) > LinkAddressTime, nil
-}
-
-func (m *Manager) resolveLinkAddressTime(address string) (time.Time, error) {
-	_, name := path.Split(address)
-	id, err := xid.FromString(name)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return id.Time(), nil
-}
-
-// DeleteExpiredLinkAddresses delete expired link addresses from kv store. This call uses limiter to access
-// kv, assuming the call does in the background.
-func (m *Manager) DeleteExpiredLinkAddresses(ctx context.Context, repository *graveler.RepositoryRecord) error {
-	itr, err := NewAddressTokenIterator(ctx, m.kvStoreLimited, repository)
-	if err != nil {
-		return err
-	}
-	defer itr.Close()
-	for itr.Next() {
-		token := itr.Value()
-		expired, err := m.IsLinkAddressExpired(token)
-		if err != nil {
-			return err
-		}
-		if expired {
-			err := deleteLinkAddress(ctx, m.kvStoreLimited, repository, token.Address)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return itr.Err()
 }
 
 func (m *Manager) DeleteExpiredImports(ctx context.Context, repository *graveler.RepositoryRecord) error {
@@ -653,7 +696,7 @@ func (m *Manager) DeleteExpiredImports(ctx context.Context, repository *graveler
 		}
 		if status.UpdatedAt.AsTime().Before(expiry) {
 			if !status.Completed && status.Error == "" {
-				logging.Default().WithFields(logging.Fields{"import_id": status.Id}).Warning("removing stale import")
+				logging.FromContext(ctx).WithFields(logging.Fields{"import_id": status.Id}).Warning("removing stale import")
 			}
 			err = m.kvStoreLimited.Delete(ctx, []byte(repoPartition), entry.Key)
 			if err != nil {
@@ -662,4 +705,111 @@ func (m *Manager) DeleteExpiredImports(ctx context.Context, repository *graveler
 		}
 	}
 	return errs.ErrorOrNil()
+}
+
+// Pull Requests logic
+// TODO (niro): In the future we would probably like to move all the PR logic into a dedicated service similar to actions.
+// TODO (niro): For now we put all the logic here under a single block
+
+const (
+	// pullRequestsPrefix used for repo context listing
+	pullRequestsPrefix = "pulls"
+	// PullsPartitionKey used for lookup per source-dest (future)
+	PullsPartitionKey = "pulls"
+	reposPrefix       = "repos"
+)
+
+func PullRequestPath(pullID graveler.PullRequestID) string {
+	return kv.FormatPath(pullRequestsPrefix, pullID.String())
+}
+
+func basePullsPath(repoID string) string {
+	return kv.FormatPath(reposPrefix, repoID)
+}
+
+func PullBySrcDstPath(repository *graveler.RepositoryRecord, srcBranch, dstBranch string) string {
+	return kv.FormatPath(basePullsPath(graveler.RepoPartition(repository)), srcBranch, dstBranch)
+}
+
+func (m *Manager) getPullWithPredicate(ctx context.Context, repository *graveler.RepositoryRecord, pullID graveler.PullRequestID) (*graveler.PullRequest, kv.Predicate, error) {
+	type pullWithPred struct {
+		*graveler.PullRequestRecord
+		kv.Predicate
+	}
+	key := fmt.Sprintf("GetPullRequest:%s:%s", repository.RepositoryID, pullID)
+	result, err := m.batchExecutor.BatchFor(ctx, key, m.maxBatchDelay, batch.ExecuterFunc(func() (interface{}, error) {
+		pullKey := PullRequestPath(pullID)
+		data := graveler.PullRequestData{}
+		pred, err := kv.GetMsg(context.Background(), m.kvStore, graveler.RepoPartition(repository), []byte(pullKey), &data)
+		if err != nil {
+			return nil, err
+		}
+		return &pullWithPred{graveler.PullRequestFromProto(&data), pred}, nil
+	}))
+	if errors.Is(err, kv.ErrNotFound) {
+		err = graveler.ErrPullRequestNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	p := result.(*pullWithPred)
+	return &p.PullRequest, p.Predicate, nil
+}
+
+func (m *Manager) GetPullRequest(ctx context.Context, repository *graveler.RepositoryRecord, pullID graveler.PullRequestID) (*graveler.PullRequest, error) {
+	pull, _, err := m.getPullWithPredicate(ctx, repository, pullID)
+	return pull, err
+}
+
+func (m *Manager) ListPullRequests(ctx context.Context, repository *graveler.RepositoryRecord) (graveler.PullsIterator, error) {
+	return NewPullsIterator(ctx, m.kvStore, repository)
+}
+
+func (m *Manager) CreatePullRequest(ctx context.Context, repository *graveler.RepositoryRecord, pullRequestID graveler.PullRequestID, pullRequest *graveler.PullRequest) error {
+	// Save secondary index by source - dest. For now, we override the value. In the future we should allow only single src-dest to exist
+	secondaryKey := []byte(PullBySrcDstPath(repository, pullRequest.Source, pullRequest.Destination))
+	err := kv.SetMsg(ctx, m.kvStore, PullsPartitionKey, secondaryKey, &kv.SecondaryIndex{PrimaryKey: []byte(pullRequestID.String())})
+	if err != nil {
+		return fmt.Errorf("save secondary index by src-dest (key %s): %w", secondaryKey, err)
+	}
+
+	// Save primary
+	err = kv.SetMsgIf(ctx, m.kvStore, graveler.RepoPartition(repository), []byte(PullRequestPath(pullRequestID)), graveler.ProtoFromPullRequest(pullRequestID, pullRequest), nil)
+	if errors.Is(err, kv.ErrPredicateFailed) {
+		err = graveler.ErrPullRequestExists
+	}
+	return err
+}
+
+func (m *Manager) DeletePullRequest(ctx context.Context, repository *graveler.RepositoryRecord, pullRequestID graveler.PullRequestID) error {
+	pr, _, err := m.getPullWithPredicate(ctx, repository, pullRequestID)
+	if err != nil {
+		if errors.Is(err, graveler.ErrPullRequestNotFound) { // Ignore if not exists
+			return nil
+		}
+		return err
+	}
+
+	// Delete secondary key
+	secondaryKey := []byte(PullBySrcDstPath(repository, pr.Source, pr.Destination))
+	if err = m.kvStore.Delete(ctx, []byte(PullsPartitionKey), secondaryKey); err != nil {
+		return fmt.Errorf("delete secondary index by src-dest (key %s): %w", secondaryKey, err)
+	}
+
+	// Delete primary key
+	pullKey := PullRequestPath(pullRequestID)
+	return m.kvStore.Delete(ctx, []byte(graveler.RepoPartition(repository)), []byte(pullKey))
+}
+
+func (m *Manager) UpdatePullRequest(ctx context.Context, repository *graveler.RepositoryRecord, pullRequestID graveler.PullRequestID, f graveler.PullUpdateFunc) error {
+	b, pred, err := m.getPullWithPredicate(ctx, repository, pullRequestID)
+	if err != nil {
+		return err
+	}
+	newPull, err := f(b)
+	// return on error or nothing to update
+	if err != nil || newPull == nil {
+		return err
+	}
+	return kv.SetMsgIf(ctx, m.kvStore, graveler.RepoPartition(repository), []byte(PullRequestPath(pullRequestID)), graveler.ProtoFromPullRequest(pullRequestID, newPull), pred)
 }

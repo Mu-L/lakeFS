@@ -11,6 +11,9 @@ import (
 // ID is an identifier for a Range
 type ID string
 
+// StorageID is id for object storage
+type StorageID string
+
 // Namespace is namespace for ID ranges
 type Namespace string
 
@@ -61,7 +64,7 @@ type RangeManager interface {
 
 	// GetURI returns a URI from which to read the contents of id.  If id does not exist
 	// it may return a URI that resolves nowhere rather than an error.
-	GetURI(ctx context.Context, ns Namespace, id ID) (string, error)
+	GetURI(ctx context.Context, id ID) (string, error)
 }
 
 // WriteResult is the result of a completed write of a Range

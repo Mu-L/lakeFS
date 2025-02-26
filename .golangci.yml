@@ -1,24 +1,21 @@
 run:
   tests: false
-  skip-dirs:
-    - pkg/metastore/hive/gen-go
   timeout: 5m
 
 linters:
   disable-all: true
   enable:
     - bodyclose
-    - depguard
     - dogsled
     - errcheck
     - gochecknoinits
     - goconst
     - gocritic
     - gocyclo
-    - goerr113
+    - err113
     - gofmt
     - goimports
-    - gomnd
+    - mnd
     - goprintffuncname
     - gosec
     - gosimple
@@ -26,7 +23,7 @@ linters:
     - ineffassign
     - misspell
     - nakedret
-    - exportloopref
+    - copyloopvar
     - staticcheck
     - stylecheck
     - typecheck
@@ -36,6 +33,10 @@ linters:
     - whitespace
 
 linters-settings:
-  gomnd:
+  mnd:
     ignored-files:
       - 'pkg/actions/lua/.*'
+
+issues:
+  exclude-dirs:
+    - pkg/metastore/hive/gen-go

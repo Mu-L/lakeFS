@@ -1,12 +1,45 @@
 :root {
-  --color-fg-added: #339933;
-  --color-fg-removed: #FF3300;
-  --color-fg-changed: #ffc003;
-  --color-fg-conflict: #7f7966;
+  --color-fg-added: var(--bs-success);
+  --color-fg-removed: var(--bs-danger);
+  --color-fg-changed: var(--bs-warning);
+  --color-fg-conflict: var(--bs-secondary);
+  --color-uri-octicon: #0c5460;
+  --color-uri-link: #0f6674;
   --color-bg-added: #e6ffec;
   --color-bg-removed: #ffece6;
   --color-bg-changed: #fff6db;
+  --color-bg-unknown: #f1f4ff;
   --color-bg-conflict: #fff3cd;
+  --color-policy-text: #d63384;
+/* The following is all the colors that are used by the css (kept here for refernce, when adding new colors): */
+/*  --bs-success: var(--bs-success);*/
+/*  --bs-danger: var(--bs-danger);*/
+/*  --bs-warning: var(--bs-warning);*/
+/*  --bs-body-bg: var(--bs-body-bg);*/
+/*  --bs-tertiary-bg: var(--bs-tertiary-bg);*/
+/*  --bs-light-border-subtle: var(--bs-light-border-subtle);*/
+/*  --bs-border-color: var(--bs-border-color);*/
+/*  --bs-dark-border-subtle: var(--bs-dark-border-subtle);*/
+/*  --bs-secondary: var(--bs-secondary);*/
+/*  --bs-light-text-emphasis: var(--bs-light-text-emphasis);*/
+/*  --bs-dark-text-emphasis: var(--bs-dark-text-emphasis);*/
+/*  --bs-body-color: var(--bs-body-color);*/
+/*  --bs-emphasis-color: var(--bs-emphasis-color);*/
+/*  --bs-blue: var(--bs-blue);*/
+/*  --bs-cyan: var(--bs-cyan);*/
+/*  --bs-pink: var(--bs-pink);*/
+/*  --bs-teal: var(--bs-teal);*/
+}
+
+[data-bs-theme="dark"] {
+  --color-policy-text: #ffb6c1;
+  --color-uri-octicon: #f3ab9f;
+  --color-uri-link: #f0998b;
+  --color-bg-added: #002008;
+  --color-bg-removed: #571500;
+  --color-bg-changed: #6b2900;
+  --color-bg-unknown: #00104a;
+  --color-bg-conflict: #32001c;
 }
 
 .gray-out {
@@ -61,10 +94,6 @@
   border-bottom: none;
 }
 
-.float-start {
-  width: 100%;
-}
-
 .action-bar .float-start .btn {
   margin-right: 10px;
 }
@@ -79,10 +108,10 @@
 }
 
 .navbar a.dropdown-toggle {
-  color: #DDDDDD;
+  color: var(--bs-white);
 }
 .navbar a.dropdown-toggle:hover {
-  color: #FFFFFF;
+  color: var(--bs-border-color);
 }
 
 .nav-tabs .nav-link.active {
@@ -90,7 +119,7 @@
 }
 
 .commit-list .list-group-item:nth-of-type(even) {
-  background-color: #FBFBFB;
+  background-color: var(--bs-tertiary-bg);
 }
 
 .commit-actions .btn, .branch-actions .btn, .run-commit {
@@ -100,19 +129,19 @@
 }
 
 .lakefs-uri .octicon {
-  color: #0c5460;
+  color: var(--color-uri-octicon);
   margin-right: 5px;
 }
 
 .lakefs-uri a {
-  color: #0f6674;
+  color: var(--color-uri-link);
   text-decoration: underline;
 }
 
 .lakefs-uri {
   font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
   font-size: .9rem;
-  color: #303030;
+  color: var(--bs-body-color);
   width: 95%;
 }
 
@@ -148,7 +177,7 @@
 .ref-list .list-group-item {
   padding: 10px 15px;
   border: 0;
-  border-bottom: 1px solid #DDD;
+  border-bottom: 1px solid var(--bs-border-color);
   border-radius: 0;
   clear: both;
 }
@@ -162,15 +191,15 @@
 
 .ref-popover h5 {
   padding: 10px;
-  border-bottom: 1px solid #DDD;
-  background-color: #FBFBFB;
+  border-bottom: 1px solid var(--bs-border-color);
+  background-color: var(--bs-tertiary-bg);
   text-align: center;
 }
 
 .ref-filter-form {
   padding: 10px;
-  border-bottom: 1px solid #DDD;
-  background-color: #FBFBFB;
+  border-bottom: 1px solid var(--bs-border-color);
+  background-color: var(--bs-tertiary-bg);
 }
 .ref-filter-form form {
   margin-bottom: 0;
@@ -236,7 +265,7 @@
 
 
 .table .change-entry-row:hover {
-  background-color: #FBFBFB;
+  background-color: var(--bs-tertiary-bg);
 }
 
 .table .tree-entry-row td,
@@ -270,7 +299,7 @@
 }
 
 .tree-path .octicon {
-  color: #007bff;
+  color: var(--bs-blue);
   margin-right: 5px;
   font-size: .875rem;
 }
@@ -278,7 +307,7 @@
 .diff-removed .tree-path,
 .diff-removed .tree-path .octicon,
 .diff-removed .diff-indicator .octicon {
-  color: #808080;
+  color: var(--bs-secondary);
 }
 
 td.tree-path {
@@ -287,24 +316,24 @@ td.tree-path {
   width: 30%;
 }
 
-.diff-changed {
+.diff-changed td {
   background-color: var(--color-bg-changed);
 }
 
-.diff-added {
+.diff-added td {
   background-color: var(--color-bg-added)
 }
 
-.diff-removed {
+.diff-removed td {
   background-color: var(--color-bg-removed);
 }
 
-.diff-conflict {
+.diff-conflict td {
   background-color: var(--color-bg-conflict);
 }
 
-.diff-more {
-  background-color: #ffffff;
+.diff-more td {
+  background-color: var(--bs-body-bg);
 }
 
 .table tr .row-hover {
@@ -328,13 +357,13 @@ td.tree-path {
 }
 
 .hook-logs {
-  background: #222222;
-  color: #FBFBFB;
+  background: var(--bs-body-color);
+  color: var(--bs-tertiary-bg);
   padding: 40px 10px;
 }
 .hook-log, .hook-log pre {
-  background: #222222;
-  color: #FBFBFB;
+  background: var(--bs-body-color);
+  color: var(--bs-tertiary-bg);
 }
 .hook-log pre {
   padding: 20px 0;
@@ -347,12 +376,12 @@ td.tree-path {
 }
 .hook-log-title small {
   font-size: 0.7em;
-  color: #AAAAAA;
+  color: var(--bs-dark-border-subtle);
   margin-left: 10px;
 }
 
 .hook-log-title .btn, .hook-log-title .btn.btn-link  {
-    color: #fbfbfb;
+    color: var(--bs-tertiary-bg);
 }
 
 .change-entry-row-actions {
@@ -418,7 +447,7 @@ td.change-entry-row-actions {
 
 .policy-body {
   padding: 30px;
-  background-color: #EEEEEE;
+  background-color: var(--bs-light-border-subtle);
 }
 
 .auth-page .tab-content {
@@ -428,15 +457,20 @@ td.change-entry-row-actions {
 textarea.form-control.policy-document {
   font-family: "SFMono-Regular", Menlo, Consolas, Monospace, serif;
   font-size: 10px;
-  color: #e83e8c;
-  background-color: #F8F8F8;
+  color: var(--color-policy-text);
+  background-color: var(--bs-tertiary-bg);
   padding: 10px;
 }
 textarea.form-control.policy-document:focus {
   font-family: "SFMono-Regular", Menlo, Consolas, Monospace, serif;
   font-size: 10px;
-  color: #e83e8c;
+  color: var(--color-policy-text);
   padding: 10px;
+}
+
+.input-group>.input-group-prepend>.input-group-text {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 td .form-group {
@@ -522,7 +556,7 @@ td.change-summary {
   padding-bottom: 30px;
   font-size: 30px;
   font-weight: bold;
-  color: #2ce5b5;
+  color: var(--bs-cyan);
 }
 
 .invited-welcome-msg .body {
@@ -544,11 +578,11 @@ td.change-summary {
 }
 
 .action-bar .btn.create-user {
-  background-color: #258c82;
+  background-color: var(--bs-success);
 }
 
 .action-bar .btn.cancel-create-user {
-  background-color: #7e7e7e;
+  background-color: var(--bs-dark-text-emphasis);
 }
 
 
@@ -556,17 +590,17 @@ td.change-summary {
 .after-setup-btn {
   width: 250px;
   margin-top: 7px;
-  background-color: #0fa276;
-  color: #FFF;
+  background-color: var(--bs-success);
+  color: var(--bs-body-bg);
   border: 0;
 }
 .after-setup-btn:hover {
-  color: #FFF;
-  background-color: #4e555b;
+  color: var(--bs-body-bg);
+  background-color: var(--bs-light-text-emphasis);
 }
 
 .after-setup-card code {
-  color: #4e555b;
+  color: var(--bs-light-text-emphasis);
 }
 
 .copy-button {
@@ -578,7 +612,7 @@ td.change-summary {
 
 .import-num-objects {
   display: inline-flex;
-  color: green;
+  color: var(--bs-success);
   font-weight: bolder;
   margin: 0 2px;
 }
@@ -589,7 +623,7 @@ td.change-summary {
 }
 
 .import-success {
-  color: green;
+  color: var(--bs-success);
   display: flex;
   justify-content: center;
   font-size: 160%
@@ -608,8 +642,8 @@ td.change-summary {
 
 .code-container {
   border-radius: 10px;
-  border: 1px solid #dadada;
-  background-color: #FBFBFB;
+  border: 1px solid var(--bs-border-color);
+  background-color: var(--bs-tertiary-bg);
 }
 
 .file-content-card {
@@ -617,7 +651,7 @@ td.change-summary {
 }
 
 .file-content-heading {
-  background-color: #FBFBFB;
+  background-color: var(--bs-tertiary-bg);
   padding: 10px;
 }
 
@@ -636,14 +670,14 @@ td.change-summary {
 
 
 .object-viewer-sql-input.form-control {
-  background-color: #333333;
+  background-color: var(--bs-light-text-emphasis);
   font-size: .8rem;
   font-family: "SFMono-Regular", menlo, consolas, monospace;
-  color: #BBB;
+  color: var(--bs-dark-border-subtle);
 }
 .object-viewer-sql-input.form-control:focus {
-  background-color: #333333;
-  color: #FFFFFF;
+  background-color: var(--bs-light-text-emphasis);
+  color: var(--bs-body-bg);
 }
 
 .powered-by {
@@ -664,7 +698,7 @@ td.change-summary {
 }
 .object-viewer-sql-results th small {
   font-size: .7rem;
-  color: #888;
+  color: var(--bs-dark-border-subtle);
 }
 
 .image-container {
@@ -676,14 +710,26 @@ td.change-summary {
 .object-viewer-pdf {
   margin: 20px;
 }
-
 .object-viewer-pdf object {
   width: 100%;
   height: 600px;
 }
+.object-viewer-markdown {
+  padding: 20px;
+}
+.object-viewer-markdown h2,
+.object-viewer-markdown h3,
+.object-viewer-markdown h4,
+.object-viewer-markdown h5,
+.object-viewer-markdown h6 {
+  padding-bottom: 0.25em;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--bs-border-color);
+  margin-top: 2rem;
+}
 
 .required-field-label {
-  color: red;
+  color: var(--bs-danger);
 }
 
 .otf-diff-update {
@@ -696,6 +742,10 @@ td.change-summary {
 
 .otf-diff-delete {
   background-color: var(--color-bg-removed);
+}
+
+.otf-diff-unknown {
+  background-color: var(--color-bg-unknown);
 }
 
 .table.table-diff {
@@ -721,7 +771,7 @@ td.table-operation-details {
 }
 
 .table-operation-expansion {
-  color: black;
+  color: var(--bs-emphasis-color);
 }
 
 td.table-diff-type {
@@ -740,7 +790,7 @@ td.entry-type-indicator {
   position: relative;
   background: linear-gradient(#54a3ff, #006eed);
   border-radius: 50%;
-  color: white;
+  color: var(--bs-body-bg);
   height: 10px;
   line-height: 20px;
   margin-left: 5px;
@@ -752,7 +802,7 @@ td.entry-type-indicator {
   display: inline-block;
   background: linear-gradient(#54a3ff, #006eed);
   border-radius: 50%;
-  color: white;
+  color: var(--bs-body-bg);
   height: 10px;
   line-height: 20px;
   margin-left: 5px;
@@ -761,9 +811,9 @@ td.entry-type-indicator {
 
 .getting-started-card {
   margin-top: 64px;
-  background-color: #f5f5f5;
+  background-color: var(--bs-tertiary-bg);
   border: none;
-  color: #22262A;
+  color: var(--bs-body-color);
   padding: 104px 72px 32px 72px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 }
@@ -785,7 +835,7 @@ td.entry-type-indicator {
   font-weight: 500;
   line-height: 32px;
   font-style: normal;
-  color: #22262A;
+  color: var(--bs-body-color);
 }
 
 .getting-started-card > .text-container p {
@@ -793,7 +843,7 @@ td.entry-type-indicator {
   font-weight: 200;
   line-height: 32px;
   font-style: normal;
-  color: #22262A;
+  color: var(--bs-body-color);
 }
 
 .getting-started-card > .text-container p .sub-title {
@@ -801,7 +851,7 @@ td.entry-type-indicator {
   font-weight: 300;
   line-height: 32px;
   font-style: normal;
-  color: #22262A;
+  color: var(--bs-body-color);
 }
 
 .getting-started-card > .button-container {
@@ -835,4 +885,41 @@ td.entry-type-indicator {
 
 .create-sample-repo-button.btn-link:hover {
   background: none;
+}
+
+.file-drop-zone {
+  text-align: center;
+  background-color: var(--bs-light-border-subtle);
+  height: 80px;
+  vertical-align: center;
+  line-height: 80px;
+  border: 2px dashed var(--bs-dark-border-subtle);
+  color: var(--bs-secondary);
+  font-size: 1.3em;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.file-drop-zone.file-drop-zone-focus {
+  border: 2px dashed #94B49F;
+  color: #94B49F;
+  background-color: var(--bs-light-border-subtle);
+}
+
+.upload-item {
+  font-family: "SFMono-Regular", menlo, consolas, monospace;
+  padding: 3px 0;
+  font-size: .75em;
+}
+
+.upload-item-uploading {
+  background-color: var(--bs-light-border-subtle);
+}
+
+.upload-item-done {
+  color: var(--bs-success);
+}
+
+.pull-details .description {
+  min-height: 160px;
 }

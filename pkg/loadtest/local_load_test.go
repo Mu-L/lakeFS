@@ -13,14 +13,15 @@ import (
 	"github.com/treeverse/lakefs/pkg/api"
 	"github.com/treeverse/lakefs/pkg/auth"
 	"github.com/treeverse/lakefs/pkg/auth/crypt"
-	"github.com/treeverse/lakefs/pkg/auth/email"
 	authmodel "github.com/treeverse/lakefs/pkg/auth/model"
 	authparams "github.com/treeverse/lakefs/pkg/auth/params"
 	"github.com/treeverse/lakefs/pkg/auth/setup"
+	"github.com/treeverse/lakefs/pkg/authentication"
 	"github.com/treeverse/lakefs/pkg/block"
 	"github.com/treeverse/lakefs/pkg/catalog"
 	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/kv"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
 	"github.com/treeverse/lakefs/pkg/kv/kvtest"
 	"github.com/treeverse/lakefs/pkg/logging"
 	"github.com/treeverse/lakefs/pkg/stats"
@@ -38,7 +39,8 @@ func TestLocalLoad(t *testing.T) {
 	ctx := context.Background()
 	viper.Set(config.BlockstoreTypeKey, block.BlockstoreTypeLocal)
 
-	conf, err := config.NewConfig()
+	cfg := &config.BaseConfig{}
+	cfg, err := config.NewConfig("", cfg)
 	testutil.MustDo(t, "config", err)
 
 	superuser := &authmodel.SuperuserConfiguration{
@@ -49,8 +51,8 @@ func TestLocalLoad(t *testing.T) {
 	}
 
 	kvStore := kvtest.GetStore(ctx, t)
-	authService := auth.NewAuthService(kvStore, crypt.NewSecretStore([]byte("some secret")), nil, authparams.ServiceCache{}, logging.Default().WithField("service", "auth"))
-	meta := auth.NewKVMetadataManager("local_load_test", conf.Installation.FixedID, conf.Database.Type, kvStore)
+	authService := auth.NewBasicAuthService(kvStore, crypt.NewSecretStore([]byte("some secret")), authparams.ServiceCache{}, logging.FromContext(ctx))
+	meta := auth.NewKVMetadataManager("local_load_test", cfg.Installation.FixedID, cfg.Database.Type, kvStore)
 
 	blockstoreType := os.Getenv(testutil.EnvKeyUseBlockAdapter)
 	if blockstoreType == "" {
@@ -59,10 +61,9 @@ func TestLocalLoad(t *testing.T) {
 
 	blockAdapter := testutil.NewBlockAdapterByType(t, blockstoreType)
 	c, err := catalog.New(ctx, catalog.Config{
-		Config:       conf,
+		Config:       cfg,
 		KVStore:      kvStore,
 		PathProvider: upload.DefaultPathProvider,
-		Limiter:      conf.NewGravelerBackgroundLimiter(),
 	})
 	testutil.MustDo(t, "build catalog", err)
 
@@ -70,42 +71,22 @@ func TestLocalLoad(t *testing.T) {
 	outputWriter := catalog.NewActionsOutputWriter(c.BlockAdapter)
 
 	// wire actions
-	actionsService := actions.NewService(ctx, actions.NewActionsKVStore(kvStore), source, outputWriter, &actions.DecreasingIDGenerator{}, &stats.NullCollector{}, actions.Config{Enabled: true})
+	actionsService := actions.NewService(ctx, actions.NewActionsKVStore(kvStore), source, outputWriter, &actions.DecreasingIDGenerator{}, &stats.NullCollector{}, actions.Config{Enabled: true}, "")
 	c.SetHooksHandler(actionsService)
 
-	credentials, err := setup.SetupAdminUser(ctx, authService, conf, superuser)
+	credentials, err := setup.AddAdminUser(ctx, authService, superuser, false)
 	testutil.Must(t, err)
 
 	authenticator := auth.NewBuiltinAuthenticator(authService)
-	kvParams, err := conf.DatabaseParams()
+	kvParams, err := kvparams.NewConfig(&cfg.Database)
 	testutil.Must(t, err)
 	migrator := kv.NewDatabaseMigrator(kvParams)
 	t.Cleanup(func() {
 		_ = c.Close()
 	})
-	auditChecker := version.NewDefaultAuditChecker(conf.Security.AuditCheckURL, "", nil)
-	emailer, err := email.NewEmailer(email.Params(conf.Email))
-	testutil.Must(t, err)
-	handler := api.Serve(
-		conf,
-		c,
-		authenticator,
-		authService,
-		blockAdapter,
-		meta,
-		migrator,
-		&stats.NullCollector{},
-		nil,
-		actionsService,
-		auditChecker,
-		logging.Default(),
-		emailer,
-		nil,
-		nil,
-		nil,
-		upload.DefaultPathProvider,
-		nil,
-	)
+	auditChecker := version.NewDefaultAuditChecker(cfg.Security.AuditCheckURL, "", nil)
+	authenticationService := authentication.NewDummyService()
+	handler := api.Serve(cfg, c, authenticator, authService, authenticationService, blockAdapter, meta, migrator, &stats.NullCollector{}, nil, actionsService, auditChecker, logging.ContextUnavailable(), nil, nil, upload.DefaultPathProvider, stats.DefaultUsageReporter)
 
 	ts := httptest.NewServer(handler)
 	defer ts.Close()

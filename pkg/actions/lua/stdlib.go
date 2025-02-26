@@ -151,7 +151,7 @@ func getBaseLibrary(output io.StringWriter) []glua.RegistryFunction {
 				var stats runtime.MemStats
 				runtime.ReadMemStats(&stats)
 				l.PushNumber(float64(stats.HeapAlloc >> 10))
-				l.PushInteger(int(stats.HeapAlloc & 0x3ff))
+				l.PushInteger(int(stats.HeapAlloc & 0x3ff)) //nolint:gosec
 				return 2
 			default:
 				l.PushInteger(-1)
@@ -350,6 +350,7 @@ func BaseOpen(buf io.StringWriter) glua.Function {
 
 type OpenSafeConfig struct {
 	NetHTTPEnabled bool
+	LakeFSAddr     string // The domain (or "authority:port") that lakeFS listens to
 }
 
 func OpenSafe(l *glua.State, ctx context.Context, cfg OpenSafeConfig, buf io.StringWriter) {

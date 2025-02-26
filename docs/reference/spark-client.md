@@ -1,14 +1,11 @@
 ---
-layout: default
 title: Spark Client
 description: The lakeFS Spark client performs operations on lakeFS committed metadata stored in the object store. 
 parent: Reference
-has_children: false
-nav_order: 40
 ---
 
 
-# lakeFS Spark Client Reference
+# lakeFS Spark Metadata Client
 
 Utilize the power of Spark to interact with the metadata on lakeFS. Possible use cases include:
 
@@ -19,48 +16,35 @@ Utilize the power of Spark to interact with the metadata on lakeFS. Possible use
 
 ## Getting Started
 
-Start Spark Shell / PySpark with the `--packages` flag:
+Please note that Spark 2 is no longer supported with the lakeFS metadata client.
+{: .note }
+
+The Spark metadata client is compiled for Spark 3.1.2 with Hadoop 3.2.1, but
+can work for other Spark versions and higher Hadoop versions.
 
 <div class="tabs">
   <ul>
-    <li><a href="#packages-2">Spark 2.x</a></li>
-	<li><a href="#packages-3-hadoop2">Spark 3.x</a></li>
-	<li><a href="#packages-3-hadoop3">Spark 3.x on Hadoop 3.x</a></li>
+    <li><a href="#spark-shell">PySpark, spark-shell, spark-submit, spark-sql</a></li>
+	<li><a href="#databricks">DataBricks</a></li>
   </ul>
-  <div markdown="1" id="packages-2">
-  This client is compiled for Spark 2.4.7 and tested with it, but can work for higher versions.
+  <div markdown="1" id="spark-shell">
+Start Spark Shell / PySpark with the `--packages` flag, for instance:
 
-  ```bash
-  spark-shell --packages io.lakefs:lakefs-spark-client-247_2.11:0.8.1
-  ```
-  
-  Alternatively an assembled jar is available on S3, at
-  `s3://treeverse-clients-us-east/lakefs-spark-client-247/0.8.1/lakefs-spark-client-247-assembly-0.8.1.jar`
-  </div>
+```bash
+spark-shell --packages io.lakefs:lakefs-spark-client_2.12:0.14.1
+```
 
-  <div markdown="1" id="packages-3-hadoop2">
-  This client is compiled for Spark 3.0.1 with Hadoop 2 and tested with it, but can work for
-  higher versions.
-
-  ```bash
-  spark-shell --packages io.lakefs:lakefs-spark-client-301_2.12:0.8.1
-  ```
-  
-  Alternatively an assembled jar is available on S3, at
-  `s3://treeverse-clients-us-east/lakefs-spark-client-301/0.8.1/lakefs-spark-client-301-assembly-0.8.1.jar`
-  </div> 
-
-  <div markdown="1" id="packages-3-hadoop3">
-  This client is compiled for Spark 3.1.2 with Hadoop 3.2.1, but can work for other Spark
-  versions and higher Hadoop versions.
-  
-  ```bash
-  spark-shell --packages io.lakefs:lakefs-spark-client-312-hadoop3-assembly_2.12:0.8.1
-  ```
-
-  Alternatively an assembled jar is available on S3, at
-  `s3://treeverse-clients-us-east/lakefs-spark-client-312-hadoop3/0.8.1/lakefs-spark-client-312-hadoop3-assembly-0.8.1.jar`
-  </div>
+Alternatively use the assembled jar (an "Überjar") on S3, from
+`s3://treeverse-clients-us-east/lakefs-spark-client/0.14.1/lakefs-spark-client-assembly-0.14.1.jar`
+by passing its path to `--jars`.
+The assembled jar is larger but shades several common libraries.  Use it if Spark
+complains about bad classes or missing methods.
+</div>
+<div markdown="1" id="databricks">
+Include this assembled jar (an "Überjar") from S3, from
+`s3://treeverse-clients-us-east/lakefs-spark-client/0.14.1/lakefs-spark-client-assembly-0.14.1.jar`.
+</div>
+</div>
 
 ## Configuration
 
@@ -133,5 +117,27 @@ Start Spark Shell / PySpark with the `--packages` flag:
     */
    ```
 
+1. Search by user metadata:
+
+   ```scala
+   import io.treeverse.clients.LakeFSContext
+
+   val namespace = "s3://bucket/repo/path/"
+   val df = LakeFSContext.newDF(spark, namespace)
+
+   val key = "SomeKey"
+   val searchedValue = "val3"
+   df.select("key", "user_metadata")
+   	.filter(_.getMap[String, String](1).toMap.get(s"X-Amz-Meta-${key}").getOrElse("") == searchedValue)
+   	.show()
+   /* output example:
+      +---------+-----------------------------------------------------+
+      |key      |user_metadata                                        |
+      +---------+-----------------------------------------------------+
+      |file1.txt|{X-Amz-Meta-SomeKey -> val3, X-Amz-Meta-Tag -> blue} |
+      |file8.txt|{X-Amz-Meta-SomeKey -> val3, X-Amz-Meta-Tag -> green}|
+      +---------+-----------------------------------------------------+
+    */
+   ```
 
 [s3a-assumed-role]:  https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/assumed_roles.html#Configuring_Assumed_Roles

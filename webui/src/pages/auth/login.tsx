@@ -1,5 +1,4 @@
 import React, {useState} from "react";
-import Layout from "../../lib/components/layout";
 import Row from "react-bootstrap/Row";
 import Card from "react-bootstrap/Card";
 import Form from "react-bootstrap/Form";
@@ -12,6 +11,8 @@ import {useAPI} from "../../lib/hooks/api";
 
 interface LoginConfig {
     login_url: string;
+    username_ui_placeholder: string;
+    password_ui_placeholder: string;
     login_failed_message?: string;
     fallback_login_url?: string;
     fallback_login_label?: string;
@@ -22,19 +23,12 @@ interface LoginConfig {
 const LoginForm = ({loginConfig}: {loginConfig: LoginConfig}) => {
     const router = useRouter();
     const [loginError, setLoginError] = useState(null);
-    const { response, error, loading } = useAPI(() => auth.getAuthCapabilities());
-    if (loading) {
-        return null;
-    }
-
-    const showResetPwd = !error && response && response.forgot_password;
-    const usernamePlaceholder = showResetPwd ? "Email / Access Key ID" : "Access Key ID"
-    const passwordPlaceholder = showResetPwd ? "Password / Secret Access Key" : "Secret Access Key"
     const { next } = router.query;
-
+    const usernamePlaceholder = loginConfig.username_ui_placeholder || "Access Key ID";
+    const passwordPlaceholder = loginConfig.password_ui_placeholder || "Secret Access Key";
     return (
         <Row>
-            <Col md={{offset: 5, span: 2}}>
+            <Col md={{offset: 4, span: 4}}>
                 <Card className="login-widget">
                     <Card.Header>Login</Card.Header>
                     <Card.Body>
@@ -65,10 +59,6 @@ const LoginForm = ({loginConfig}: {loginConfig: LoginConfig}) => {
                             <Button variant="primary" type="submit">Login</Button>
                         </Form>
                         <div className={"mt-2 mb-1"}>
-                            { showResetPwd ?
-                                <Button variant="link" className={"text-secondary mt-2"}  onClick={()=> {router.push("/auth/resetpassword")}}>Reset password</Button>
-                                : ""
-                            }
                             { loginConfig.fallback_login_url ?
                                 <Button variant="link" className="text-secondary mt-2" onClick={async ()=> {
                                     loginConfig.login_cookie_names?.forEach(
@@ -96,7 +86,8 @@ const LoginPage = () => {
         return null;
     }
 
-    if (!error && response && response.state !== SETUP_STATE_INITIALIZED) {
+    // if we are not initialized, or we are not done with comm prefs, redirect to 'setup' page
+    if (!error && response && (response.state !== SETUP_STATE_INITIALIZED || response.comm_prefs_missing === true)) {
         router.push({pathname: '/setup', query: router.query})
         return null;
     }
@@ -107,12 +98,11 @@ const LoginPage = () => {
             return null;
         }
         delete router.query.redirected;
+
         router.push({pathname: '/auth/login', query: router.query})
     }
     return (
-        <Layout logged={false}>
-            <LoginForm loginConfig={loginConfig}/>
-        </Layout>
+        <LoginForm loginConfig={loginConfig}/>
     );
 };
 

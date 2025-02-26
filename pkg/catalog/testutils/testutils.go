@@ -13,8 +13,6 @@ import (
 	"github.com/treeverse/lakefs/pkg/block"
 	"github.com/treeverse/lakefs/pkg/catalog"
 	"github.com/treeverse/lakefs/pkg/graveler"
-	"github.com/treeverse/lakefs/pkg/ingest/store"
-	"github.com/treeverse/lakefs/pkg/kv"
 	"github.com/treeverse/lakefs/pkg/testutil"
 )
 
@@ -65,40 +63,6 @@ func NewFakeValueIterator(records []*graveler.ValueRecord) *FakeValueIterator {
 	}
 }
 
-type FakeKVEntryIterator struct {
-	Entries []*kv.Entry
-	Error   error
-	index   int
-}
-
-func NewFakeKVEntryIterator(entries []*kv.Entry) *FakeKVEntryIterator {
-	return &FakeKVEntryIterator{
-		Entries: entries,
-		index:   -1,
-	}
-}
-
-func (f *FakeKVEntryIterator) Next() bool {
-	if f.Error != nil {
-		return false
-	}
-	f.index++
-	return f.index < len(f.Entries)
-}
-
-func (f *FakeKVEntryIterator) Entry() *kv.Entry {
-	if f.Error != nil || f.index < 0 || f.index >= len(f.Entries) {
-		return nil
-	}
-	return f.Entries[f.index]
-}
-
-func (f *FakeKVEntryIterator) Err() error {
-	return f.Error
-}
-
-func (f *FakeKVEntryIterator) Close() {}
-
 type FakeEntryIterator struct {
 	Entries []*catalog.EntryRecord
 	Error   error
@@ -145,15 +109,6 @@ func (f *FakeEntryIterator) Err() error {
 
 func (f *FakeEntryIterator) Close() {}
 
-type FakeFactory struct {
-	Walker *FakeWalker
-}
-
-func (f FakeFactory) GetWalker(_ context.Context, op store.WalkerOptions) (*store.WalkerWrapper, error) {
-	u, _ := url.Parse(op.StorageURI)
-	return store.NewWrapper(f.Walker, u), nil
-}
-
 func NewFakeWalker(count, max int, uriPrefix, expectedAfter, expectedContinuationToken, expectedFromSourceURIWithPrefix string, err error) *FakeWalker {
 	w := &FakeWalker{
 		Max:                             max,
@@ -195,6 +150,7 @@ func (w *FakeWalker) createEntries(count int) {
 	// For example, setting "5" here will cause the test to constantly fail.
 	// Fix Bug #3384
 	const seed = 6
+	// tests, safe
 	//nolint:gosec
 	randGen := rand.New(rand.NewSource(seed))
 	for i := 0; i < count; i++ {

@@ -11,34 +11,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-openapi/swag"
-	tablediff "github.com/treeverse/lakefs/pkg/plugins/diff"
-
 	"github.com/deepmap/oapi-codegen/pkg/securityprovider"
 	"github.com/spf13/viper"
 	"github.com/treeverse/lakefs/pkg/actions"
 	"github.com/treeverse/lakefs/pkg/api"
+	"github.com/treeverse/lakefs/pkg/api/apigen"
+	"github.com/treeverse/lakefs/pkg/api/apiutil"
 	"github.com/treeverse/lakefs/pkg/auth"
 	"github.com/treeverse/lakefs/pkg/auth/crypt"
-	"github.com/treeverse/lakefs/pkg/auth/email"
 	authmodel "github.com/treeverse/lakefs/pkg/auth/model"
 	authparams "github.com/treeverse/lakefs/pkg/auth/params"
+	"github.com/treeverse/lakefs/pkg/authentication"
 	"github.com/treeverse/lakefs/pkg/block"
 	"github.com/treeverse/lakefs/pkg/cache"
 	"github.com/treeverse/lakefs/pkg/catalog"
 	"github.com/treeverse/lakefs/pkg/config"
 	"github.com/treeverse/lakefs/pkg/graveler/settings"
-	"github.com/treeverse/lakefs/pkg/ingest/store"
 	"github.com/treeverse/lakefs/pkg/kv"
+	"github.com/treeverse/lakefs/pkg/kv/kvparams"
 	"github.com/treeverse/lakefs/pkg/kv/kvtest"
 	"github.com/treeverse/lakefs/pkg/kv/mem"
 	"github.com/treeverse/lakefs/pkg/logging"
 	"github.com/treeverse/lakefs/pkg/stats"
-	"github.com/treeverse/lakefs/pkg/templater"
 	"github.com/treeverse/lakefs/pkg/testutil"
 	"github.com/treeverse/lakefs/pkg/upload"
 	"github.com/treeverse/lakefs/pkg/version"
-	"github.com/treeverse/lakefs/templates"
 )
 
 const (
@@ -47,7 +44,7 @@ const (
 
 type dependencies struct {
 	blocks      block.Adapter
-	catalog     catalog.Interface
+	catalog     *catalog.Catalog
 	authService auth.Service
 	collector   *memCollector
 	server      *httptest.Server
@@ -81,31 +78,14 @@ func (m *memCollector) SetInstallationID(installationID string) {
 	m.InstallationID = installationID
 }
 
-func (m *memCollector) CollectCommPrefs(email, installationID string, featureUpdates, securityUpdates bool) {
+func (m *memCollector) CollectCommPrefs(_ stats.CommPrefs) {
 }
 
 func (m *memCollector) Close() {}
 
-func setupCommPrefs(t testing.TB, clt api.ClientWithResponsesInterface) *api.NextStep {
+func createDefaultAdminUser(t testing.TB, clt apigen.ClientWithResponsesInterface) *authmodel.BaseCredential {
 	t.Helper()
-	mockEmail := "test@acme.co"
-	res, err := clt.SetupCommPrefsWithResponse(context.Background(), api.SetupCommPrefsJSONRequestBody{
-		Email:           &mockEmail,
-		FeatureUpdates:  false,
-		SecurityUpdates: false,
-	})
-	testutil.Must(t, err)
-	if res.JSON200 == nil {
-		t.Fatal("Failed to setup comm prefs", res.HTTPResponse.StatusCode, res.HTTPResponse.Status)
-	}
-	return &api.NextStep{
-		NextStep: "comm_prefs_done",
-	}
-}
-
-func createDefaultAdminUser(t testing.TB, clt api.ClientWithResponsesInterface) *authmodel.BaseCredential {
-	t.Helper()
-	res, err := clt.SetupWithResponse(context.Background(), api.SetupJSONRequestBody{
+	res, err := clt.SetupWithResponse(context.Background(), apigen.SetupJSONRequestBody{
 		Username: "admin",
 	})
 	testutil.Must(t, err)
@@ -119,33 +99,7 @@ func createDefaultAdminUser(t testing.TB, clt api.ClientWithResponsesInterface) 
 	}
 }
 
-func createUserWithDefaultGroup(t testing.TB, clt api.ClientWithResponsesInterface) *authmodel.BaseCredential {
-	t.Helper()
-	// create the user
-	createUsrRes, err := clt.CreateUserWithResponse(context.Background(), api.CreateUserJSONRequestBody{
-		Id:         "test@example.com",
-		InviteUser: swag.Bool(false),
-	})
-	testutil.Must(t, err)
-	if createUsrRes.JSON201 == nil {
-		t.Fatal("Failed to create user", createUsrRes.HTTPResponse.StatusCode, createUsrRes.HTTPResponse.Status)
-	}
-
-	// create credentials for the user
-	createCredsRes, err := clt.CreateCredentialsWithResponse(context.Background(), createUsrRes.JSON201.Id)
-	testutil.Must(t, err)
-	if createCredsRes.JSON201 == nil {
-		t.Fatal("Failed to create credentials", createCredsRes.HTTPResponse.StatusCode, createCredsRes.HTTPResponse.Status)
-	}
-
-	return &authmodel.BaseCredential{
-		IssuedDate:      time.Unix(createCredsRes.JSON201.CreationDate, 0),
-		AccessKeyID:     createCredsRes.JSON201.AccessKeyId,
-		SecretAccessKey: createCredsRes.JSON201.SecretAccessKey,
-	}
-}
-
-func setupHandlerWithWalkerFactory(t testing.TB, factory catalog.WalkerFactory) (http.Handler, *dependencies) {
+func setupHandler(t testing.TB) (http.Handler, *dependencies) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -153,29 +107,27 @@ func setupHandlerWithWalkerFactory(t testing.TB, factory catalog.WalkerFactory) 
 		viper.Set(config.BlockstoreTypeKey, block.BlockstoreTypeMem)
 	}
 	viper.Set("database.type", mem.DriverName)
-	// Use 'internal' mode in order to have access to policies
-	viper.Set("auth.ui_config.rbac", "internal")
+	// Add endpoint so that 'IsAdvancedAuth' will be in effect
+	viper.Set("auth.api.endpoint", config.DefaultListenAddress)
 
 	collector := &memCollector{}
-
-	cfg, err := config.NewConfig()
+	cfg := &config.BaseConfig{}
+	cfg, err := config.NewConfig("", cfg)
 	testutil.MustDo(t, "config", err)
 	kvStore := kvtest.GetStore(ctx, t)
 	actionsStore := actions.NewActionsKVStore(kvStore)
 	idGen := &actions.DecreasingIDGenerator{}
-	authService := auth.NewAuthService(kvStore, crypt.NewSecretStore([]byte("some secret")), nil, authparams.ServiceCache{
+	authService := auth.NewBasicAuthService(kvStore, crypt.NewSecretStore([]byte("some secret")), authparams.ServiceCache{
 		Enabled: false,
-	}, logging.Default())
+	}, logging.FromContext(ctx))
 	meta := auth.NewKVMetadataManager("serve_test", cfg.Installation.FixedID, cfg.Database.Type, kvStore)
 
 	// Do not validate invalid config (missing required fields).
 	c, err := catalog.New(ctx, catalog.Config{
 		Config:                cfg,
 		KVStore:               kvStore,
-		WalkerFactory:         factory,
 		SettingsManagerOption: settings.WithCache(cache.NoCache),
 		PathProvider:          upload.DefaultPathProvider,
-		Limiter:               cfg.NewGravelerBackgroundLimiter(),
 	})
 	testutil.MustDo(t, "build catalog", err)
 
@@ -190,12 +142,13 @@ func setupHandlerWithWalkerFactory(t testing.TB, factory catalog.WalkerFactory) 
 		idGen,
 		collector,
 		actionsConfig,
+		"",
 	)
 
 	c.SetHooksHandler(actionsService)
 
 	authenticator := auth.NewBuiltinAuthenticator(authService)
-	kvParams, err := cfg.DatabaseParams()
+	kvParams, err := kvparams.NewConfig(&cfg.Database)
 	testutil.Must(t, err)
 	migrator := kv.NewDatabaseMigrator(kvParams)
 
@@ -205,32 +158,9 @@ func setupHandlerWithWalkerFactory(t testing.TB, factory catalog.WalkerFactory) 
 	})
 
 	auditChecker := version.NewDefaultAuditChecker(cfg.Security.AuditCheckURL, "", nil)
-	emailer, err := email.NewEmailer(email.Params(cfg.Email))
-	tmpl := templater.NewService(templates.Content, cfg, authService)
 
-	otfDiffService := tablediff.NewMockService()
-
-	testutil.Must(t, err)
-	handler := api.Serve(
-		cfg,
-		c,
-		authenticator,
-		authService,
-		c.BlockAdapter,
-		meta,
-		migrator,
-		collector,
-		nil,
-		actionsService,
-		auditChecker,
-		logging.Default(),
-		emailer,
-		tmpl,
-		nil,
-		nil,
-		upload.DefaultPathProvider,
-		otfDiffService,
-	)
+	authenticationService := authentication.NewDummyService()
+	handler := api.Serve(cfg, c, authenticator, authService, authenticationService, c.BlockAdapter, meta, migrator, collector, nil, actionsService, auditChecker, logging.ContextUnavailable(), nil, nil, upload.DefaultPathProvider, stats.DefaultUsageReporter)
 
 	return handler, &dependencies{
 		blocks:      c.BlockAdapter,
@@ -240,11 +170,7 @@ func setupHandlerWithWalkerFactory(t testing.TB, factory catalog.WalkerFactory) 
 	}
 }
 
-func setupHandler(t testing.TB) (http.Handler, *dependencies) {
-	return setupHandlerWithWalkerFactory(t, store.NewFactory(nil))
-}
-
-func setupClientByEndpoint(t testing.TB, endpointURL string, accessKeyID, secretAccessKey string, opts ...api.ClientOption) api.ClientWithResponsesInterface {
+func setupClientByEndpoint(t testing.TB, endpointURL string, accessKeyID, secretAccessKey string, opts ...apigen.ClientOption) apigen.ClientWithResponsesInterface {
 	t.Helper()
 
 	if accessKeyID != "" {
@@ -252,9 +178,9 @@ func setupClientByEndpoint(t testing.TB, endpointURL string, accessKeyID, secret
 		if err != nil {
 			t.Fatal("basic auth security provider", err)
 		}
-		opts = append(opts, api.WithRequestEditorFn(basicAuthProvider.Intercept))
+		opts = append(opts, apigen.WithRequestEditorFn(basicAuthProvider.Intercept))
 	}
-	clt, err := api.NewClientWithResponses(endpointURL+api.BaseURL, opts...)
+	clt, err := apigen.NewClientWithResponses(endpointURL+apiutil.BaseURL, opts...)
 	if err != nil {
 		t.Fatal("failed to create lakefs api client:", err)
 	}
@@ -283,18 +209,12 @@ func shouldUseServerTimeout() bool {
 	return withServerTimeout
 }
 
-func setupClientWithAdmin(t testing.TB) (api.ClientWithResponsesInterface, *dependencies) {
+func setupClientWithAdmin(t testing.TB) (apigen.ClientWithResponsesInterface, *dependencies) {
 	t.Helper()
-	return setupClientWithAdminAndWalkerFactory(t, store.NewFactory(nil))
-}
-
-func setupClientWithAdminAndWalkerFactory(t testing.TB, factory catalog.WalkerFactory) (api.ClientWithResponsesInterface, *dependencies) {
-	t.Helper()
-	handler, deps := setupHandlerWithWalkerFactory(t, factory)
+	handler, deps := setupHandler(t)
 	server := setupServer(t, handler)
 	deps.server = server
 	clt := setupClientByEndpoint(t, server.URL, "", "")
-	_ = setupCommPrefs(t, clt)
 	cred := createDefaultAdminUser(t, clt)
 	clt = setupClientByEndpoint(t, server.URL, cred.AccessKeyID, cred.SecretAccessKey)
 	return clt, deps
@@ -304,7 +224,6 @@ func TestInvalidRoute(t *testing.T) {
 	handler, _ := setupHandler(t)
 	server := setupServer(t, handler)
 	clt := setupClientByEndpoint(t, server.URL, "", "")
-	_ = setupCommPrefs(t, clt)
 	cred := createDefaultAdminUser(t, clt)
 
 	// setup client with invalid endpoint base url
@@ -312,13 +231,13 @@ func TestInvalidRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal("basic auth security provider", err)
 	}
-	clt, err = api.NewClientWithResponses(server.URL+api.BaseURL+"//", api.WithRequestEditorFn(basicAuthProvider.Intercept))
+	clt, err = apigen.NewClientWithResponses(server.URL+apiutil.BaseURL+"//", apigen.WithRequestEditorFn(basicAuthProvider.Intercept))
 	if err != nil {
 		t.Fatal("failed to create api client:", err)
 	}
 
 	ctx := context.Background()
-	resp, err := clt.ListRepositoriesWithResponse(ctx, &api.ListRepositoriesParams{})
+	resp, err := clt.ListRepositoriesWithResponse(ctx, &apigen.ListRepositoriesParams{})
 	if err != nil {
 		t.Fatalf("failed to get lakefs server version")
 	}

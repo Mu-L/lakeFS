@@ -1,18 +1,14 @@
 ---
-layout: default
 title: Kubeflow
 description: Easily build reproducible data pipelines with Kubeflow and lakeFS using commits, without modifying the code or logic of your job.
 parent: Integrations
-nav_order: 90
-has_children: false
 
 ---
 # Using lakeFS with Kubeflow pipelines
-{: .no_toc }
 [Kubeflow](https://www.kubeflow.org/docs/about/kubeflow/) is a project dedicated to making deployments of ML workflows on Kubernetes simple, portable, and scalable.
-A Kubeflow pipeline is a portable and scalable definition of an ML workflow composed of steps. Each step in the pipeline is an instance of a component represented as an instance of [ContainerOp](https://kubeflow-pipelines.readthedocs.io/en/stable/source/kfp.dsl.html#kfp.dsl.ContainerOp).
+A Kubeflow pipeline is a portable and scalable definition of an ML workflow composed of steps. Each step in the pipeline is an instance of a component represented as an instance of [ContainerOp](https://kf-pipelines.readthedocs.io/en/latest/source/kfp.dsl.html#kfp.dsl.ContainerOp).
 
-{% include toc.html %}
+{% include toc_2-3.html %}
 
 
 ## Add pipeline steps for lakeFS operations
@@ -24,11 +20,10 @@ Currently, there are two methods to create lakeFS ContainerOps:
 
 ### Function-based ContainerOps
 
-To implement a [function-based component](https://www.kubeflow.org/docs/components/pipelines/sdk/python-function-components/) that invokes lakeFS operations,
+To implement a [function-based component](https://www.kubeflow.org/docs/components/pipelines/legacy-v1/sdk/python-function-components/) that invokes lakeFS operations,
 you should use the [Python OpenAPI client](python.md) lakeFS provides. See the example below that demonstrates how to make the client's package available to your ContainerOp.
 
 #### Example operations
-{: .no_toc }
 
 Create a new branch: A function-based ContainerOp that creates a branch called `example-branch` based on the `main` branch of `example-repo`.
 
@@ -61,7 +56,7 @@ Check out the full API [reference](https://docs.lakefs.io/reference/api.html).
 ### Non-function-based ContainerOps
 
 To implement a non-function based ContainerOp, you should use the [`treeverse/lakectl`](https://hub.docker.com/r/treeverse/lakectl) docker image.
-With this image, you can run [lakectl](/reference/cli.html) commands to execute the desired lakeFS operation.
+With this image, you can run [lakectl]({% link reference/cli.md %}) commands to execute the desired lakeFS operation.
 
 For `lakectl` to work with Kubeflow, you will need to pass your lakeFS configurations as environment variables named:
 
@@ -70,7 +65,6 @@ For `lakectl` to work with Kubeflow, you will need to pass your lakeFS configura
 * `LAKECTL_SERVER_ENDPOINT_URL: https://lakefs.example.com`
 
 #### Example operations
-{: .no_toc }
 
 1. Commit changes to a branch: A ContainerOp that commits uncommitted changes to `example-branch` on `example-repo`.
 
@@ -94,7 +88,7 @@ For `lakectl` to work with Kubeflow, you will need to pass your lakeFS configura
      arguments=['merge', 'lakefs://example-repo/example-branch', 'lakefs://example-repo/main']).add_env_variable(V1EnvVar(name='LAKECTL_CREDENTIALS_ACCESS_KEY_ID',value='AKIAIOSFODNN7EXAMPLE')).add_env_variable(V1EnvVar(name='LAKECTL_CREDENTIALS_SECRET_ACCESS_KEY',value='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')).add_env_variable(V1EnvVar(name='LAKECTL_SERVER_ENDPOINT_URL',value='https://lakefs.example.com'))
    ```
 
-You can invoke any lakeFS operation supported by `lakectl` by implementing it as a ContainerOp. Check out the complete [CLI reference](../reference/cli.md) for the list of supported operations.
+You can invoke any lakeFS operation supported by `lakectl` by implementing it as a ContainerOp. Check out the complete [CLI reference]({% link reference/cli.md %}) for the list of supported operations.
 
 
 **Note**
@@ -106,7 +100,6 @@ The lakeFS Kubeflow integration that uses `lakectl` is supported on lakeFS versi
 Add the steps created in the previous step to your pipeline before compiling it.
 
 ### Example pipeline
-{: .no_toc }
 
 A pipeline that implements a simple ETL that has steps for branch creation and commits.
 
