@@ -317,7 +317,8 @@ func (c *Controller) UploadPart(w http.ResponseWriter, r *http.Request, body api
 
 func (c *Controller) UploadPartCopy(w http.ResponseWriter, r *http.Request,
 	body apigen.UploadPartCopyJSONRequestBody, dstRepository string, branch string, uploadID string, partNumber int,
-	params apigen.UploadPartCopyParams) {
+	params apigen.UploadPartCopyParams,
+) {
 	var (
 		ctx = r.Context()
 
@@ -1763,6 +1764,7 @@ func (c *Controller) GetUser(w http.ResponseWriter, r *http.Request, userID stri
 		CreationDate: u.CreatedAt.Unix(),
 		Email:        u.Email,
 		Id:           u.Username,
+		FriendlyName: u.FriendlyName,
 	}
 	writeResponse(w, r, http.StatusOK, response)
 }
@@ -2983,6 +2985,7 @@ func (c *Controller) handleAPIErrorCallback(ctx context.Context, w http.Response
 		errors.Is(err, graveler.ErrInvalidMergeStrategy),
 		errors.Is(err, block.ErrInvalidAddress),
 		errors.Is(err, block.ErrOperationNotSupported),
+		errors.Is(err, auth.ErrInvalidRequest),
 		errors.Is(err, authentication.ErrInvalidRequest),
 		errors.Is(err, graveler.ErrSameBranch),
 		errors.Is(err, graveler.ErrInvalidPullRequestStatus),
@@ -4650,13 +4653,14 @@ func (c *Controller) GetMetadataObject(w http.ResponseWriter, r *http.Request, r
 	}
 
 	var objPath string
-	if objectType == getTypeMetaRange {
+	switch objectType {
+	case getTypeMetaRange:
 		addr, err := c.Catalog.GetMetaRange(ctx, repository, objectID)
 		if c.handleAPIError(ctx, w, r, err) {
 			return
 		}
 		objPath = string(addr)
-	} else if objectType == getTypeRange {
+	case getTypeRange:
 		addr, err := c.Catalog.GetRange(ctx, repository, objectID)
 		if c.handleAPIError(ctx, w, r, err) {
 			return
@@ -5462,6 +5466,7 @@ func (c *Controller) getVersionConfig() apigen.VersionConfig {
 		UpgradeUrl:         upgradeURL,
 		Version:            swag.String(version.Version),
 		LatestVersion:      latestVersion,
+		VersionContext:     swag.String(c.Config.GetVersionContext()),
 	}
 }
 
@@ -5981,7 +5986,9 @@ func (c *Controller) GetUsageReportSummary(w http.ResponseWriter, r *http.Reques
 	}
 
 	// flush data before collecting usage - can help for single node deployments
-	c.usageReporter.Flush(ctx)
+	if _, err := c.usageReporter.Flush(ctx); err != nil {
+		c.Logger.WithError(err).Warn("Failed to flush usage reporter")
+	}
 
 	records, err := c.usageReporter.Records(ctx)
 	if c.handleAPIError(ctx, w, r, err) {
@@ -6151,4 +6158,8 @@ func (c *Controller) GetLicense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeResponse(w, r, http.StatusOK, apigen.License{Token: token})
+}
+
+func (c *Controller) OauthCallback(w http.ResponseWriter, r *http.Request) {
+	c.Authentication.OauthCallback(w, r, c.sessionStore)
 }

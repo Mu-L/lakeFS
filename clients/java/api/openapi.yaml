@@ -7551,6 +7551,24 @@ paths:
       - license
       - experimental
       x-accepts: application/json
+  /oidc/callback:
+    get:
+      operationId: oauthCallback
+      responses:
+        "302":
+          description: successfully got token
+        "401":
+          description: failed to exchange authorization code for token
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Internal Server Error
+      security: []
+      tags:
+      - auth
+      x-accepts: application/json
 components:
   parameters:
     PaginationPrefix:
@@ -9291,6 +9309,7 @@ components:
           pre_sign_support: true
         version_config:
           latest_version: latest_version
+          version_context: version_context
           version: version
           upgrade_recommended: true
           upgrade_url: upgrade_url
@@ -9307,11 +9326,14 @@ components:
     VersionConfig:
       example:
         latest_version: latest_version
+        version_context: version_context
         version: version
         upgrade_recommended: true
         upgrade_url: upgrade_url
       properties:
         version:
+          type: string
+        version_context:
           type: string
         latest_version:
           type: string

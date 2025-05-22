@@ -71,9 +71,10 @@ type Configuration struct {
 		Provider        struct {
 			Type   lakefsconfig.OnlyString `mapstructure:"type"`
 			AWSIAM struct {
-				TokenTTL            time.Duration     `mapstructure:"token_ttl_seconds"`
-				URLPresignTTL       time.Duration     `mapstructure:"url_presign_ttl_seconds"`
-				TokenRequestHeaders map[string]string `mapstructure:"token_request_headers"`
+				TokenTTL            time.Duration      `mapstructure:"token_ttl_seconds"`
+				URLPresignTTL       time.Duration      `mapstructure:"url_presign_ttl_seconds"`
+				RefreshInterval     time.Duration      `mapstructure:"refresh_interval"`
+				TokenRequestHeaders *map[string]string `mapstructure:"token_request_headers"`
 			} `mapstructure:"aws_iam"`
 		} `mapstructure:"provider"`
 	} `mapstructure:"credentials"`
@@ -194,9 +195,6 @@ const (
 	defaultMaxAttempts      = 4
 	defaultMaxRetryInterval = 30 * time.Second
 	defaultMinRetryInterval = 200 * time.Millisecond
-
-	defaultTokenTTL      = 3600 * time.Second
-	defaultURLPresignTTL = 60 * time.Second
 )
 
 func withRecursiveFlag(cmd *cobra.Command, usage string) {
@@ -403,7 +401,7 @@ func getCommitFlags(cmd *cobra.Command) (string, map[string]string) {
 	return message, kvPairs
 }
 
-func getKV(cmd *cobra.Command, name string) (map[string]string, error) { //nolint:unparam
+func getKV(cmd *cobra.Command, name string) (map[string]string, error) {
 	kvList, err := cmd.Flags().GetStringSlice(name)
 	if err != nil {
 		return nil, err
@@ -677,7 +675,5 @@ func initConfig() {
 	viper.SetDefault("server.retries.min_wait_interval", defaultMinRetryInterval)
 	viper.SetDefault("experimental.local.posix_permissions.enabled", false)
 	viper.SetDefault("local.skip_non_regular_files", false)
-	viper.SetDefault("credentials.provider.aws_iam.token_ttl_seconds", defaultTokenTTL)
-	viper.SetDefault("credentials.provider.aws_iam.url_presign_ttl_seconds", defaultURLPresignTTL)
 	cfgErr = viper.ReadInConfig()
 }
