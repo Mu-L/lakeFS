@@ -1,5 +1,34 @@
 # Changelog
 
+# v1.57.0
+
+:new: What's new:
+
+- UI: turn off hive partitioning while select parquet using DuckDB (#9056)
+- Add friendly name to GetUser API response (#9065)
+
+# v1.56.1
+
+:bug: Bugs fixed:
+
+- Fix ParseRange to fail on bytes=-0 (#9032)
+- Fix S3 ListMultipartUploads response missing NextUploadIDMarker (#9036)
+- Use MD5 as ETag in gs adapter (#9041)
+- lakectl - add AWS IAM login config (ignored) (#8994)
+
+# v1.56.0
+
+:new: What's new:
+
+- UI : Add GeoJSON preview support (#8996,#9014)
+- S3 Gateway: Add support for list parts for Google storage adapter (#9019)
+- S3 Gateway: SigV4 Support Unsigned Payload Trailers (#9009)
+- UI: Enable expand/collapse functionality for directory trees  (#8978)
+
+:bug: Bugs fixed:
+
+-  UI: Fix repository tree layout and link behavior (#8999)
+
 # v1.55.0
 
 :new: What's new:

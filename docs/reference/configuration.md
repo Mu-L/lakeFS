@@ -125,7 +125,6 @@ Configuration section when using `database.type="local"`
 
 #### auth.authentication_api
 
-* `auth.authentication_api.endpoint` `(string: https://external.authentication-service/api/v1)` - URL to external Authentication Service described at [authentication.yml](https://github.com/treeverse/lakeFS/blob/master/api/authentication.yml)
 * `auth.authentication_api.endpoint` `(string : "")` - URL to external Authentication Service described at [authentication.yml](https://github.com/treeverse/lakeFS/blob/master/api/authentication.yml);
 * `auth.authentication_api.external_principals_enabled` `(bool : false)` - If true, external principals API will be enabled, e.g auth service and login api's.
 
@@ -242,7 +241,7 @@ Configuration section when using `database.type="local"`
 
 An object describing the local (on-disk) cache of metadata from permanent storage.
 * `committed.local_cache.size_bytes` (`int` : `1073741824`) - bytes for local cache to use on disk.  The cache may use more storage for short periods of time.
-* `committed.local_cache.dir` (`string`, `~/lakefs/local_tier`) - directory to store local cache.
+* `committed.local_cache.dir` (`string`, `~/lakefs/data/cache`) - directory to store local cache.
 * `committed.local_cache.range_proportion` (`float` : `0.9`) - proportion of local cache to
   use for storing ranges (leaves of committed metadata storage).
 * `committed.local_cache.range.open_readers` (`int` : `500`) - maximal number of unused open

@@ -8,8 +8,6 @@ redirect_from:
 
 # Authenticate to lakeFS with AWS IAM Roles
 {: .d-inline-block }
-lakeFS Cloud
-{: .label .label-green }
 
 lakeFS Enterprise
 {: .label .label-purple }
@@ -128,6 +126,7 @@ The login to lakeFS is done by calling the [login API][login-api] with the `GetC
 Currently, the login operation is supported out of the box in:
 - [lakeFS Hadoop FileSystem][lakefs-hadoopfs] version 0.2.4, see [Spark usage][lakefs-spark]
 - [python](#login-with-python)
+- [Everest mount](https://docs.lakefs.io/reference/mount.html#authenticating-with-aws-iam-role)
 
 For other use cases authenticate to lakeFS via login endpoint, this will require building the request input.
 
@@ -140,24 +139,54 @@ For other use cases authenticate to lakeFS via login endpoint, this will require
 To install the required packages, run the following command:
 
 ```sh
-  pip install lakefs[aws-iam]
+  pip install "lakefs[aws-iam]"
 ```
 
-In order to generate a lakeFS client with the assumed role, initiate a boto3 session with the desired role and call `lakefs.client.frow_aws_role`:
+There are two ways in which external principals can be used to authenticate to lakeFS:
+
+1. If no other authentication flow is provided, and the `credentials.provider.type` configuration is set to `aws_iam` in `.lakectl.yaml`, the client will use the machine's AWS role to authenticate with lakeFS:
+    
+   ```yaml
+    credentials:
+      provider:
+        type: aws_iam
+        aws_iam:
+          token_ttl_seconds: 3600            # TTL for the temporary token (default: 3600)
+          url_presign_ttl_seconds: 60        # TTL for presigned URLs (default: 60)
+          token_request_headers:             # Optional headers for token requests
+            HeaderName: HeaderValue
+    ```
+    Or using environment variables:
+    ```bash
+    export LAKECTL_CREDENTIALS_PROVIDER_TYPE="aws_iam"
+    export LAKECTL_CREDENTIALS_PROVIDER_AWS_IAM_TOKEN_TTL_SECONDS="3600"
+    export LAKECTL_CREDENTIALS_PROVIDER_AWS_IAM_PRESIGNED_URL_TTL_SECONDS="60"
+    export LAKECTL_CREDENTIALS_PROVIDER_AWS_IAM_TOKEN_REQUEST_HEADERS='{"HeaderName":"HeaderValue"}'
+    ```
+   To use the client, merely `import lakefs` and use it as you would normally do:
+   ```python
+   import lakefs
+
+   for branch in lakefs.repository("example-repo").branches():
+    print(branch)
+   ```
+   {: .warning }
+   > Please note, using the IAM provider configurations will not work with the lakectl command line tool, and will stop you from running it.
 
 
-```python
-import lakefs
-import boto3    
-session = boto3.Session()
-my_client = lakefs.client.from_aws_role(session=session, ttl_seconds=7200, host="<lakefs-host>")
-
-# list repositories
-repos = lakefs.repositories(client=my_client)
-for r in repos:
-    print(r)
-```
-
+2. Generate a lakeFS client with the assumed role by initiating a boto3 session with the desired role and call `lakefs.client.frow_aws_role`:
+    
+   ```python
+    import lakefs
+    import boto3    
+    session = boto3.Session()
+    my_client = lakefs.client.from_aws_role(session=session, ttl_seconds=7200, host="<lakefs-host>")
+    
+    # list repositories
+    repos = lakefs.repositories(client=my_client)
+    for r in repos:
+        print(r)
+    ```
 
 [external-principal-admin]:  {% link reference/api.md %}#external
 [login-api]: {% link reference/api.md %}#auth/externalPrincipalLogin
